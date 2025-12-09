@@ -10,5 +10,8 @@
 
     <packaging>pom</packaging>
 
-
+    <modules>
+        <module>cortex-common</module>
+        <module>cortex-ingestion</module>
+    </modules>
 </project>
