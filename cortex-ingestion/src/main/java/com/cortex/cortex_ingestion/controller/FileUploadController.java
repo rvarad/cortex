@@ -1,18 +1,14 @@
 package com.cortex.cortex_ingestion.controller;
 
-import java.util.Map;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
-
-import com.cortex.cortex_ingestion.service.FileStorageService;
-import com.cortex.cortex_ingestion.service.MinioStorageService;
-
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.cortex.cortex_ingestion.dto.GetPresignedURLRequestDTO;
+import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
+import com.cortex.cortex_ingestion.service.MinioStorageService;
 
 @RestController
 @RequestMapping("/files")
@@ -43,12 +39,12 @@ public class FileUploadController {
   // }
 
   @PostMapping("/upload")
-  public ResponseEntity<Map<String, String>> generatePresignedUrl(@RequestParam("filename") String filename) {
-    String uploadUrl = minioStorageService.getPresignedUrl(filename);
+  public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
+      @RequestBody GetPresignedURLRequestDTO requestBody) {
+    GetPresignedURLResponseDTO uploadUrl = minioStorageService.getPresignedUrl(requestBody.getFilename(),
+        requestBody.getContentType(), requestBody.getSize());
 
-    return ResponseEntity.ok(Map.of(
-        "uploadUrl", uploadUrl,
-        "expiresIn", "15 minutes"));
+    return ResponseEntity.ok(uploadUrl);
   }
 
 }
