@@ -4,6 +4,8 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.nio.ShortBuffer;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.awt.image.BufferedImage;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
@@ -12,6 +14,8 @@ import org.bytedeco.javacv.Java2DFrameConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import com.cortex.cortex_media_processing_service.WavUtils;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +26,8 @@ import lombok.extern.slf4j.Slf4j;
 public class MediaProcessingService {
 
   private final MinioStorageService minioStorageService;
+
+  private final TranscriptionService transcriptionService;
 
   private static final int AUDIO_CHUNK_DURATION_US = 60_000_000;
   private static final int VIDEO_SNAPSHOT_INTERVAL_US = 5_000_000;
@@ -34,6 +40,8 @@ public class MediaProcessingService {
     try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(streamUrl)) {
 
       grabber.setOption("listen", "0");
+      grabber.setSampleRate(16000);
+      grabber.setAudioChannels(1);
 
       log.info("Initializing FFmpeg native grabber");
       grabber.start();
@@ -43,6 +51,7 @@ public class MediaProcessingService {
       Java2DFrameConverter imageConverter = new Java2DFrameConverter();
 
       long nextSnapshotTime = 0;
+      long nextAudioChunkTime = 0;
       ByteArrayOutputStream audioBuffer = new ByteArrayOutputStream();
       int audioChunkIndex = 0;
       int videoFrameIndex = 0;
@@ -70,9 +79,10 @@ public class MediaProcessingService {
           byte[] pcmData = convertSampleToBytes(frame);
           audioBuffer.write(pcmData);
 
-          if (audioBuffer.size() >= (16000 * 2 * 60)) {
+          if (timeStamp >= nextAudioChunkTime) {
             processAudioChunk(audioBuffer.toByteArray(), audioChunkIndex);
             audioBuffer.reset();
+            nextAudioChunkTime = nextAudioChunkTime + AUDIO_CHUNK_DURATION_US;
             audioChunkIndex++;
           }
         }
@@ -102,9 +112,21 @@ public class MediaProcessingService {
   }
 
   private void processAudioChunk(byte[] audioChunk, int index) {
-    int sizeInKB = audioChunk.length / 1024;
+    CompletableFuture.runAsync(() -> {
+      try {
+        byte[] wavData = WavUtils.addHeader(audioChunk);
 
-    log.info("Processed audio chunk #{} with size {}KB", index, sizeInKB);
+        Map<String, Object> response = transcriptionService.transcribe(wavData);
+
+        String transcript = (String) response.get("text");
+
+        String language = (String) response.get("language");
+
+        log.info("Transcribed audio chunk #{} in language {}: {}", index, language, transcript);
+      } catch (Exception e) {
+        log.error("Transcription failed: ", e);
+      }
+    });
   }
 
   private byte[] convertSampleToBytes(Frame frame) {
