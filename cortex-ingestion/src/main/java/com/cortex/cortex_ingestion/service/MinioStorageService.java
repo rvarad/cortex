@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.cortex.cortex_ingestion.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.model.FileMetadata;
 import com.cortex.cortex_ingestion.model.FileStatus;

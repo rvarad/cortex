@@ -1,4 +1,4 @@
-package com.cortex.cortex_ingestion.dto;
+package com.cortex.cortex_common.dto;
 
 import java.util.UUID;
 

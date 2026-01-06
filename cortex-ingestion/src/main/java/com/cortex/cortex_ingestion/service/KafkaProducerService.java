@@ -4,7 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
-import com.cortex.cortex_ingestion.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 
 @Service
 public class KafkaProducerService {
