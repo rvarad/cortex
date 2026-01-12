@@ -1,21 +1,20 @@
 package com.cortex.cortex_media_processing_service.service;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
-import java.io.InputStreamReader;
 import java.nio.ShortBuffer;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import javax.imageio.ImageIO;
+
 import java.awt.image.BufferedImage;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
 import org.bytedeco.javacv.Java2DFrameConverter;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import com.cortex.cortex_media_processing_service.WavUtils;
+import com.cortex.cortex_media_processing_service.utils.WavUtils;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,8 +28,10 @@ public class MediaProcessingService {
 
   private final TranscriptionService transcriptionService;
 
+  private final VisionService visionService;
+
   private static final int AUDIO_CHUNK_DURATION_US = 60_000_000;
-  private static final int VIDEO_SNAPSHOT_INTERVAL_US = 5_000_000;
+  private static final int VIDEO_SNAPSHOT_INTERVAL_US = 10_000_000;
 
   public void processMedia(String objectName) {
     String streamUrl = minioStorageService.getPresignedUrl(objectName);
@@ -80,7 +81,8 @@ public class MediaProcessingService {
           audioBuffer.write(pcmData);
 
           if (timeStamp >= nextAudioChunkTime) {
-            processAudioChunk(audioBuffer.toByteArray(), audioChunkIndex);
+            // processAudioChunk(audioBuffer.toByteArray(), audioChunkIndex);
+            log.info("Processing audio chunk #{}", audioChunkIndex);
             audioBuffer.reset();
             nextAudioChunkTime = nextAudioChunkTime + AUDIO_CHUNK_DURATION_US;
             audioChunkIndex++;
@@ -89,7 +91,7 @@ public class MediaProcessingService {
       }
 
       if (audioBuffer.size() > 0) {
-        processAudioChunk(audioBuffer.toByteArray(), audioChunkIndex);
+        // processAudioChunk(audioBuffer.toByteArray(), audioChunkIndex);
         log.info("Processing final partial audio chunk.");
       }
 
@@ -103,12 +105,19 @@ public class MediaProcessingService {
   }
 
   private void processImage(BufferedImage image, int index, long timeStampUS) {
-    int width = image.getWidth();
-    int height = image.getHeight();
-    double seconds = timeStampUS / 1_000_000.0;
+    CompletableFuture.runAsync(() -> {
+      try {
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        ImageIO.write(image, "jpg", stream);
+        byte[] imageBytes = stream.toByteArray();
 
-    log.info("Captured frame #{} at {}s with res: {}X{}", index, String.format("%.2f", seconds), width, height);
+        String description = visionService.describe(imageBytes);
 
+        log.info("Described image #{} at {}s: {}", index, timeStampUS / 1000000, description);
+      } catch (Exception e) {
+        log.error("Failed to process image #{}", index, e);
+      }
+    });
   }
 
   private void processAudioChunk(byte[] audioChunk, int index) {

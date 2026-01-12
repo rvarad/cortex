@@ -1,4 +1,4 @@
-package com.cortex.cortex_media_processing_service;
+package com.cortex.cortex_media_processing_service.utils;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
