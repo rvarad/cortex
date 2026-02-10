@@ -16,6 +16,6 @@ public class MediaEventConsumer {
 
   @KafkaListener(topics = "${app.kafka.topic.media}", groupId = "cortex-media-processing-group")
   public void consume(FileIngestionEventDTO event) {
-    mediaProcessingService.processMedia(event.getObjectName());
+    mediaProcessingService.processMedia(event.getObjectName(), event.getFileId());
   }
 }

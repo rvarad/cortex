@@ -2,11 +2,14 @@ package com.cortex.cortex_media_processing_service.model;
 
 import java.util.UUID;
 
+import org.apache.kafka.common.Uuid;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -15,6 +18,13 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+enum Status {
+  CHUNKED,
+  IN_PROGRESS,
+  COMPLETED,
+  FAILED
+}
 
 @Entity
 @Table(name = "media_chunk")
@@ -29,6 +39,9 @@ public class MediaChunk {
   private UUID id;
 
   @Column(nullable = false)
+  private UUID fileId;
+
+  @Column(nullable = false)
   private String objectName;
 
   private int chunkIndex;
@@ -36,6 +49,9 @@ public class MediaChunk {
   private double startTime;
 
   private double endTime;
+
+  @Enumerated(EnumType.STRING)
+  private Status status;
 
   @Column(columnDefinition = "TEXT")
   private String transcript;
