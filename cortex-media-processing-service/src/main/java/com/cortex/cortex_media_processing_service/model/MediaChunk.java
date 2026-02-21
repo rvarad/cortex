@@ -2,7 +2,6 @@ package com.cortex.cortex_media_processing_service.model;
 
 import java.util.UUID;
 
-import org.apache.kafka.common.Uuid;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -19,13 +18,6 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-enum Status {
-  CHUNKED,
-  IN_PROGRESS,
-  COMPLETED,
-  FAILED
-}
-
 @Entity
 @Table(name = "media_chunk")
 @Data
@@ -33,6 +25,13 @@ enum Status {
 @AllArgsConstructor
 @NoArgsConstructor
 public class MediaChunk {
+
+  public enum Status {
+    CHUNKED,
+    IN_PROGRESS,
+    COMPLETED,
+    FAILED
+  }
 
   @Id
   @GeneratedValue(strategy = GenerationType.UUID)

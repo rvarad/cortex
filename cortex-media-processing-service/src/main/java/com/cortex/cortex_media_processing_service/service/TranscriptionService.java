@@ -1,53 +1,76 @@
 package com.cortex.cortex_media_processing_service.service;
 
-import java.util.Map;
+import java.io.InputStream;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.MediaType;
+import org.springframework.ai.audio.transcription.AudioTranscriptionPrompt;
+import org.springframework.ai.audio.transcription.AudioTranscriptionResponse;
+import org.springframework.ai.openai.OpenAiAudioTranscriptionModel;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.stereotype.Service;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
-import org.springframework.web.client.RestClient;
 
+import com.google.common.util.concurrent.RateLimiter;
+
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class TranscriptionService {
 
-  private final RestClient restClient;
+  private final OpenAiAudioTranscriptionModel transcriptionModel;
+  private final MinioStorageService minioStorageService;
 
-  @Value("${openai.api-key}")
-  private String apiKey;
+  private final RateLimiter transcriptionRateLimiter = RateLimiter.create(20.0 / 60.0);
 
-  @Value("${openai.base-url}")
-  private String baseUrl;
-
-  @Value("${openai.model}")
-  private String model;
-
-  public TranscriptionService(RestClient.Builder builder) {
-    this.restClient = builder.baseUrl(baseUrl).build();
-  }
-
-  public Map<String, Object> transcribe(byte[] wavData) {
+  public String transcribe(String objectName) {
     try {
-      MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-      body.add("file", new ByteArrayResource(wavData) {
-        public String getFilename() {
-          return "audio.wav";
-        }
-      });
-      body.add("model", model);
-      body.add("response_format", "verbose_json");
+      transcriptionRateLimiter.acquire();
 
-      return restClient.post().uri(baseUrl).header("Authorization", "Bearer " + apiKey)
-          .contentType(MediaType.MULTIPART_FORM_DATA).body(body).retrieve().body(Map.class);
+      int maxRetries = 3;
+      int retryDelayMs = 1000;
+
+      for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        try (InputStream audioStream = minioStorageService.getFileStream(objectName)) {
+          log.info("Transcribing file: {}, attempt: {}/{}", objectName, attempt, maxRetries);
+
+          String filename = objectName.substring(objectName.lastIndexOf("/") + 1);
+
+          InputStreamResource resource = new InputStreamResource(audioStream) {
+            @Override
+            public String getFilename() {
+              return filename;
+            }
+
+            @Override
+            public long contentLength() {
+              return minioStorageService.getFileSize(objectName);
+            }
+          };
+
+          AudioTranscriptionPrompt prompt = new AudioTranscriptionPrompt(resource);
+          AudioTranscriptionResponse response = transcriptionModel.call(prompt);
+
+          String text = response.getResult().getOutput();
+          log.info("Transcription completed for: {}", objectName);
+
+          return text;
+
+        } catch (Exception e) {
+          log.warn("Transcription attempt {}/{} failed for {}, Error: {}", attempt, maxRetries, objectName,
+              e.getMessage());
+
+          if (attempt == maxRetries)
+            throw e;
+
+          Thread.sleep(attempt * retryDelayMs);
+        }
+      }
+
+      throw new RuntimeException("Transcription retries exhausted for: " + objectName);
 
     } catch (Exception e) {
-      log.error("Transcription failed: ", e);
-      return Map.of();
+      throw new RuntimeException("Failed to transcribe file: " + objectName, e);
     }
   }
 }

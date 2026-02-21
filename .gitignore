@@ -82,3 +82,5 @@ Desktop.ini
 ### Miscellaneous ###
 *.swp
 *~
+**/src/main/resources/application.properties
+**/src/main/resources/application.yml

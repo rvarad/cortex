@@ -1,0 +1,31 @@
+# Cortex Media Processing Service Configuration Template
+# Copy this file to application.properties and fill in the secrets
+
+spring.application.name=cortex-media-processing-service
+server.port=8081
+
+# Database
+spring.datasource.url=jdbc:postgresql://localhost:5432/postgres
+spring.datasource.username=REPLACE_ME
+spring.datasource.password=REPLACE_ME
+
+# MinIO
+minio.url=http://localhost:9000
+minio.access-key=REPLACE_ME
+minio.secret-key=REPLACE_ME
+minio.bucket.download=quarantine
+minio.bucket.chunks=chunks
+
+# Kafka
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.consumer.group-id=cortex-media-processing-group
+
+# AI Models
+spring.ai.openai.api-key=REPLACE_ME
+spring.ai.openai.base-url=https://api.groq.com/openai
+spring.ai.openai.audio.transcription.options.model=whisper-large-v3
+
+# Gemini
+gemini.api-key=REPLACE_ME
+spring.ai.google.genai.api-key=${gemini.api-key}
+spring.ai.google.genai.embedding.options.model=models/embedding-001
