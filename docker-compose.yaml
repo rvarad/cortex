@@ -68,6 +68,16 @@ services:
     networks:
       - cortex-net
 
+  cloudbeaver:
+    container_name: cloudbeaver
+    image: dbeaver/cloudbeaver:latest
+    ports:
+      - "8978:8978"
+    networks:
+      - cortex-net
+    depends_on:
+      - postgres
+
 networks:
   cortex-net:
     driver: bridge
