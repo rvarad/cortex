@@ -67,4 +67,22 @@ public class MinioStorageService {
     }
   }
 
+  public long getFileSize(String objectName) {
+    try {
+      return minioClient.statObject(io.minio.StatObjectArgs.builder().bucket(chunksBucket).object(objectName).build())
+          .size();
+    } catch (Exception e) {
+      throw new RuntimeException("Error getting file size", e);
+    }
+  }
+
+  public void downloadFile(String objectName, Path destination) {
+    try {
+      minioClient.downloadObject(io.minio.DownloadObjectArgs.builder().bucket(chunksBucket).object(objectName)
+          .filename(destination.toString()).build());
+    } catch (Exception e) {
+      throw new RuntimeException("Error downloading file", e);
+    }
+  }
+
 }
