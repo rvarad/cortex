@@ -8,19 +8,15 @@ COPY . .
 # Build only the ingestion module and its dependencies (like cortex-common)
 RUN mvn install -pl cortex-common -DskipTests && \
     mvn package -pl cortex-ingestion -am -DskipTests
-RUN java -Djarmode=tools -jar cortex-ingestion/target/cortex-ingestion-0.0.1-SNAPSHOT.jar extract --layers --destination target/extracted
 
 # Run stage
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-# Copy layers separately to maximize Docker caching
-COPY --from=build /app/target/extracted/dependencies/ ./
-COPY --from=build /app/target/extracted/spring-boot-loader/ ./
-COPY --from=build /app/target/extracted/snapshot-dependencies/ ./
-COPY --from=build /app/target/extracted/application/ ./
+# Copy the fat jar from the build stage
+COPY --from=build /app/cortex-ingestion/target/cortex-ingestion-0.0.1-SNAPSHOT.jar app.jar
 
 # Expose the application port
 EXPOSE 8080
 
-ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["java", "-jar", "app.jar"]
