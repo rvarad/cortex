@@ -8,6 +8,8 @@ steps:
       '.'
     ]
     id: 'build-ingestion'
+    env:
+      - 'DOCKER_BUILDKIT=1'
 
   # 2. Push the image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
