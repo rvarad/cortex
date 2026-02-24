@@ -46,10 +46,11 @@ public class MinioConfig {
   @Bean(name = "externalMinioClient")
   public MinioClient externalMinioClient() {
     return MinioClient.builder()
-        .endpoint(externalUrl)
+        .endpoint(url)
         .credentials(accessKey, secretKey)
         .region(region)
         .build();
+    // .endpoint(externalUrl)
   }
 
   @Profile("dev")

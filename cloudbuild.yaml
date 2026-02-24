@@ -1,0 +1,32 @@
+steps:
+  # 1. Build the Docker image for cortex-ingestion
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'gcr.io/$PROJECT_ID/cortex-ingestion',
+      '-f', 'cortex-ingestion/Dockerfile',
+      '.'
+    ]
+    id: 'build-ingestion'
+
+  # 2. Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/cortex-ingestion']
+    id: 'push-ingestion'
+
+  # 3. Deploy the image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'cortex-ingestion'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/cortex-ingestion'
+      - '--region'
+      - 'us-central1'
+    id: 'deploy-ingestion'
+
+options:
+  machineType: 'E2_HIGHCPU_8' # Speed up the Maven build
+  logging: CLOUD_LOGGING_ONLY
