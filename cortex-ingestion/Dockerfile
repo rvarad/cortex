@@ -6,7 +6,8 @@ WORKDIR /app
 COPY . .
 
 # Build only the ingestion module and its dependencies (like cortex-common)
-RUN mvn clean package -pl :cortex-ingestion -am -DskipTests
+RUN mvn install -pl :cortex-common -DskipTests && \
+    mvn package -pl :cortex-ingestion -am -DskipTests
 RUN java -Djarmode=tools -jar cortex-ingestion/target/cortex-ingestion-0.0.1-SNAPSHOT.jar extract --layers --destination target/extracted
 
 # Run stage
