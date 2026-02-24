@@ -3,7 +3,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build',
-      '-t', 'gcr.io/$PROJECT_ID/cortex-ingestion',
+      '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-ingestion',
       '-f', 'cortex-ingestion/Dockerfile',
       '.'
     ]
@@ -11,9 +11,9 @@ steps:
     env:
       - 'DOCKER_BUILDKIT=1'
 
-  # 2. Push the image to Container Registry
+  # 2. Push the image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/cortex-ingestion']
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-ingestion']
     id: 'push-ingestion'
 
   # 3. Deploy the image to Cloud Run
@@ -24,7 +24,7 @@ steps:
       - 'deploy'
       - 'cortex-ingestion'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/cortex-ingestion'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-ingestion'
       - '--region'
       - 'us-central1'
     id: 'deploy-ingestion'
