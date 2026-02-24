@@ -56,8 +56,12 @@ public class WebhookController {
     System.out.println(" - Payload: " + eventPayload);
 
     if (objectName != null && !objectName.isEmpty()) {
-      // In CloudEvents for Storage, subject is typically the object name
-      minioStorageService.handleFileUploadNotification(objectName);
+      // The objectName from GCS looks like "objects/quarantine/uuid.mp4"
+      // We extract only the last part (the filename) to match our database ID.
+      String fileNameOnly = objectName.substring(objectName.lastIndexOf('/') + 1);
+
+      System.out.println("Processing file ID: " + fileNameOnly);
+      minioStorageService.handleFileUploadNotification(fileNameOnly);
       return ResponseEntity.ok().build();
     }
 

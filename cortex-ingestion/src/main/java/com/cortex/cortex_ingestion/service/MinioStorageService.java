@@ -44,16 +44,17 @@ public class MinioStorageService {
       extension = originalFilename.substring(originalFilename.lastIndexOf("."));
     }
 
-    String objectName = UUID.randomUUID().toString() + extension;
+    String uuidName = UUID.randomUUID().toString() + extension;
+    String fullPath = "quarantine/" + uuidName;
 
     try {
       String url = presignedUrlClient.getPresignedObjectUrl(
-          GetPresignedObjectUrlArgs.builder().method(Method.PUT).bucket(quarantineBucket).object(objectName)
+          GetPresignedObjectUrlArgs.builder().method(Method.PUT).bucket(quarantineBucket).object(fullPath)
               .expiry(20, TimeUnit.MINUTES).build());
 
       FileMetadata metadata = fileMetadataRepository
           .save(FileMetadata.builder().fileDisplayName(originalFilename).bucketName(quarantineBucket)
-              .objectName(objectName).fileSize(size).fileStatus(FileStatus.PENDING).contentType(contentType).build());
+              .objectName(uuidName).fileSize(size).fileStatus(FileStatus.PENDING).contentType(contentType).build());
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url).fileId(metadata.getId())
           .expiresIn(LocalDateTime.now().plusMinutes(20)).build();
