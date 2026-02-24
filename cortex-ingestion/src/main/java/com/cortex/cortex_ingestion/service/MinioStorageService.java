@@ -6,15 +6,15 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
-import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatus;
+import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.repository.FileMetadataRepository;
 
 import io.minio.GetPresignedObjectUrlArgs;
@@ -28,18 +28,14 @@ public class MinioStorageService {
 
   private final MinioClient minioClient;
 
-  @Qualifier("externalMinioClient")
-  private final MinioClient externalMinioClient;
+  @Qualifier("presignedUrlClient")
+  private final MinioClient presignedUrlClient;
 
   private final FileMetadataRepository fileMetadataRepository;
   private final KafkaProducerService kafkaProducerService;
 
   @Value("${minio.bucket}")
   private String quarantineBucket;
-
-  // public MinioStorageService(MinioClient minioClient) {
-  // this.minioClient = minioClient;
-  // }
 
   @Transactional
   public GetPresignedURLResponseDTO getPresignedUrl(String originalFilename, String contentType, Long size) {
@@ -51,7 +47,7 @@ public class MinioStorageService {
     String objectName = UUID.randomUUID().toString() + extension;
 
     try {
-      String url = externalMinioClient.getPresignedObjectUrl(
+      String url = presignedUrlClient.getPresignedObjectUrl(
           GetPresignedObjectUrlArgs.builder().method(Method.PUT).bucket(quarantineBucket).object(objectName)
               .expiry(20, TimeUnit.MINUTES).build());
 

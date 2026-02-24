@@ -3,6 +3,7 @@ package com.cortex.cortex_ingestion.controller;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +23,7 @@ public class WebhookController {
     this.minioStorageService = minioStorageService;
   }
 
+  @Profile("dev")
   @PostMapping("/minio")
   public ResponseEntity<String> handleMinioEvent(@RequestBody Map<String, Object> eventPayload) {
     System.out.println("Received Minio event: " + eventPayload);
@@ -40,16 +42,25 @@ public class WebhookController {
     return ResponseEntity.ok("Minio event received successfully");
   }
 
-  @PostMapping("/upload")
-  public ResponseEntity<Void> handleFileUploadNotification(@RequestHeader("ce-subject") String objectName,
-      @RequestHeader("ce-source") String source, @RequestHeader("ce-type") String type,
+  @PostMapping("/notify-upload")
+  public ResponseEntity<Void> handleFileUploadNotification(
+      @RequestHeader(value = "ce-subject", required = false) String objectName,
+      @RequestHeader(value = "ce-source", required = false) String source,
+      @RequestHeader(value = "ce-type", required = false) String type,
       @RequestBody Map<String, Object> eventPayload) {
 
-    System.out.println("Received file upload notification: " + objectName);
-    System.out.println("Received file upload notification: " + source);
-    System.out.println("Received file upload notification: " + type);
-    System.out.println("Received file upload notification: " + eventPayload);
+    System.out.println("Received CloudEvent notification:");
+    System.out.println(" - Subject (Object): " + objectName);
+    System.out.println(" - Source: " + source);
+    System.out.println(" - Type: " + type);
 
-    return ResponseEntity.ok().build();
+    if (objectName != null && !objectName.isEmpty()) {
+      // In CloudEvents for Storage, subject is typically the object name
+      minioStorageService.handleFileUploadNotification(objectName);
+      return ResponseEntity.ok().build();
+    }
+
+    System.err.println("CloudEvent missing subject (object name). Payload: " + eventPayload);
+    return ResponseEntity.badRequest().build();
   }
 }

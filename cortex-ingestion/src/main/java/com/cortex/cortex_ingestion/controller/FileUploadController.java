@@ -21,23 +21,6 @@ public class FileUploadController {
     this.minioStorageService = minioStorageService;
   }
 
-  // @PostMapping("/upload")
-  // public ResponseEntity<Map<String, String>> uploadFile(@RequestParam
-  // MultipartFile file) {
-  // if (file.isEmpty()) {
-  // return ResponseEntity.badRequest().body(Map.of("error", "File is empty"));
-  // }
-
-  // String fileId = fileStorageService.storeFile(file);
-
-  // return ResponseEntity.ok(Map.of(
-  // "message", "File uploaded successfully",
-  // "fileId", fileId,
-  // "originalFileName", file.getOriginalFilename(),
-  // "size", String.valueOf(file.getSize()),
-  // "contentType", file.getContentType()));
-  // }
-
   @PostMapping("/upload")
   public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
       @RequestBody GetPresignedURLRequestDTO requestBody) {

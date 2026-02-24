@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 
 import io.minio.BucketExistsArgs;
@@ -39,18 +40,20 @@ public class MinioConfig {
   private String region;
 
   @Bean
+  @Primary
   public MinioClient minioClient() {
     return MinioClient.builder().endpoint(url).credentials(accessKey, secretKey).region(region).build();
   }
 
-  @Bean(name = "externalMinioClient")
-  public MinioClient externalMinioClient() {
+  @Bean(name = "presignedUrlClient")
+  public MinioClient presignedUrlClient() {
+    // Falls back to internal url if externalUrl is not set (e.g. in Prod/GCP)
+    String effectiveUrl = (externalUrl != null && !externalUrl.isEmpty()) ? externalUrl : url;
     return MinioClient.builder()
-        .endpoint(url)
+        .endpoint(effectiveUrl)
         .credentials(accessKey, secretKey)
         .region(region)
         .build();
-    // .endpoint(externalUrl)
   }
 
   @Profile("dev")
