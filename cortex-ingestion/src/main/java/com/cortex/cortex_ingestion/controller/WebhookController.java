@@ -53,6 +53,7 @@ public class WebhookController {
     System.out.println(" - Subject (Object): " + objectName);
     System.out.println(" - Source: " + source);
     System.out.println(" - Type: " + type);
+    System.out.println(" - Payload: " + eventPayload);
 
     if (objectName != null && !objectName.isEmpty()) {
       // In CloudEvents for Storage, subject is typically the object name
