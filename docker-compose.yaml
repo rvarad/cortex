@@ -30,6 +30,7 @@ services:
     networks:
       - cortex-net
 
+
   kafka:
     image: apache/kafka:latest
     container_name: kafka-server
@@ -54,29 +55,64 @@ services:
     networks:
       - cortex-net
 
-  kafka-ui:
-    container_name: kafka-ui
-    image: provectuslabs/kafka-ui:latest
+  kafka-console:
+    container_name: kafka-console
+    image: docker.redpanda.com/redpandadata/console:latest
     ports:
-      - 8090:8080
+      - "8090:8080"
     environment:
-      DYNAMIC_CONFIG_ENABLED: "true"
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-server:29092 # Or host.docker.internal:9092 if running outside docker
+      - KAFKA_BROKERS=kafka-server:29092
     depends_on:
       - kafka
     networks:
       - cortex-net
 
-  cloudbeaver:
-    container_name: cloudbeaver
-    image: dbeaver/cloudbeaver:latest
+  db-admin:
+    container_name: db-admin
+    image: adminer:latest
     ports:
-      - "8978:8978"
+      - "8978:8080"
     networks:
       - cortex-net
     depends_on:
       - postgres
+
+  cortex-ingestion:
+    build:
+      context: .
+      dockerfile: cortex-ingestion/Dockerfile
+    container_name: cortex-ingestion
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - MINIO_URL=http://minio-server:9000
+      - MINIO_EXTERNAL_URL=http://localhost:9000
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+    depends_on:
+      - postgres
+      - minio-server
+      - kafka
+    networks:
+      - cortex-net
+
+  cortex-media-processing-service:
+    build:
+      context: .
+      dockerfile: cortex-media-processing-service/Dockerfile
+    container_name: cortex-media-processing-service
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - MINIO_URL=http://minio-server:9000
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+    depends_on:
+      - postgres
+      - minio-server
+      - kafka
+    networks:
+      - cortex-net
 
 networks:
   cortex-net:

@@ -1,4 +1,4 @@
-package com.cortex.cortex_ingestion.model;
+package com.cortex.cortex_common.model;
 
 import java.time.LocalDateTime;
 import java.util.UUID;

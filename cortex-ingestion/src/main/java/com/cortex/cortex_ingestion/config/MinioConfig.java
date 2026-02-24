@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
@@ -22,6 +23,9 @@ public class MinioConfig {
   @Value("${minio.url}")
   private String url;
 
+  @Value("${minio.external-url}")
+  private String externalUrl;
+
   @Value("${minio.access-key}")
   private String accessKey;
 
@@ -31,11 +35,24 @@ public class MinioConfig {
   @Value("${minio.bucket}")
   private String bucket;
 
+  @Value("${minio.region}")
+  private String region;
+
   @Bean
   public MinioClient minioClient() {
-    return MinioClient.builder().endpoint(url).credentials(accessKey, secretKey).build();
+    return MinioClient.builder().endpoint(url).credentials(accessKey, secretKey).region(region).build();
   }
 
+  @Bean(name = "externalMinioClient")
+  public MinioClient externalMinioClient() {
+    return MinioClient.builder()
+        .endpoint(externalUrl)
+        .credentials(accessKey, secretKey)
+        .region(region)
+        .build();
+  }
+
+  @Profile("dev")
   @Bean
   public CommandLineRunner initBucket(MinioClient minioClient) {
     return args -> {

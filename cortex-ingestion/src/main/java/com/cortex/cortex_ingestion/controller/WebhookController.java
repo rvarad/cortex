@@ -6,6 +6,7 @@ import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -37,5 +38,18 @@ public class WebhookController {
       }
     }
     return ResponseEntity.ok("Minio event received successfully");
+  }
+
+  @PostMapping("/upload")
+  public ResponseEntity<Void> handleFileUploadNotification(@RequestHeader("ce-subject") String objectName,
+      @RequestHeader("ce-source") String source, @RequestHeader("ce-type") String type,
+      @RequestBody Map<String, Object> eventPayload) {
+
+    System.out.println("Received file upload notification: " + objectName);
+    System.out.println("Received file upload notification: " + source);
+    System.out.println("Received file upload notification: " + type);
+    System.out.println("Received file upload notification: " + eventPayload);
+
+    return ResponseEntity.ok().build();
   }
 }
