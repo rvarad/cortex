@@ -12,6 +12,7 @@
 
     <modules>
         <module>cortex-common</module>
+        <module>cortex-event-router</module>
         <module>cortex-ingestion</module>
         <module>cortex-media-processing-service</module>
     </modules>

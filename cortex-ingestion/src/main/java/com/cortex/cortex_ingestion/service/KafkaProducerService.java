@@ -24,7 +24,6 @@ public class KafkaProducerService {
   public void sendFileIngestedEvent(FileIngestionEventDTO event) {
     String topic = determineTopic(event.getContentType());
 
-    System.out.println("Publishing event to Kafka topic: " + topic);
     kafkaTemplate.send(topic, event.getFileId().toString(), event);
   }
 

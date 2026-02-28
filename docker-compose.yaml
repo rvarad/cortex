@@ -77,6 +77,21 @@ services:
     depends_on:
       - postgres
 
+  cortex-event-router:
+    build:
+      context: .
+      dockerfile: cortex-event-router/Dockerfile
+    container_name: cortex-event-router
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+    depends_on:
+      - kafka
+    networks:
+      - cortex-net
+
   cortex-ingestion:
     build:
       context: .
@@ -94,6 +109,7 @@ services:
       - postgres
       - minio-server
       - kafka
+      - cortex-event-router
     networks:
       - cortex-net
 
@@ -103,7 +119,7 @@ services:
       dockerfile: cortex-media-processing-service/Dockerfile
     container_name: cortex-media-processing-service
     ports:
-      - "8081:8081"
+      - "8082:8082"
     environment:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-db:5432/postgres
       - MINIO_URL=http://minio-server:9000

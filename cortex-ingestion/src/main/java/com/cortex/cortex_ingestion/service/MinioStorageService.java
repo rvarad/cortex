@@ -20,19 +20,25 @@ import com.cortex.cortex_ingestion.repository.FileMetadataRepository;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.http.Method;
-import lombok.RequiredArgsConstructor;
 
 @Service
-@RequiredArgsConstructor
 public class MinioStorageService {
 
   private final MinioClient minioClient;
-
-  @Qualifier("presignedUrlClient")
   private final MinioClient presignedUrlClient;
-
   private final FileMetadataRepository fileMetadataRepository;
   private final KafkaProducerService kafkaProducerService;
+
+  public MinioStorageService(
+      MinioClient minioClient,
+      @Qualifier("presignedUrlClient") MinioClient presignedUrlClient,
+      FileMetadataRepository fileMetadataRepository,
+      KafkaProducerService kafkaProducerService) {
+    this.minioClient = minioClient;
+    this.presignedUrlClient = presignedUrlClient;
+    this.fileMetadataRepository = fileMetadataRepository;
+    this.kafkaProducerService = kafkaProducerService;
+  }
 
   @Value("${minio.bucket}")
   private String quarantineBucket;
@@ -44,17 +50,24 @@ public class MinioStorageService {
       extension = originalFilename.substring(originalFilename.lastIndexOf("."));
     }
 
-    String uuidName = UUID.randomUUID().toString() + extension;
-    String fullPath = "quarantine/" + uuidName;
+    String objectName = UUID.randomUUID().toString() + extension;
 
     try {
+      java.util.Map<String, String> headers = new java.util.HashMap<>();
+      headers.put("Content-Type", contentType);
+
       String url = presignedUrlClient.getPresignedObjectUrl(
-          GetPresignedObjectUrlArgs.builder().method(Method.PUT).bucket(quarantineBucket).object(fullPath)
-              .expiry(20, TimeUnit.MINUTES).build());
+          GetPresignedObjectUrlArgs.builder()
+              .method(Method.PUT)
+              .bucket(quarantineBucket)
+              .object(objectName)
+              .extraHeaders(headers)
+              .expiry(20, TimeUnit.MINUTES)
+              .build());
 
       FileMetadata metadata = fileMetadataRepository
           .save(FileMetadata.builder().fileDisplayName(originalFilename).bucketName(quarantineBucket)
-              .objectName(uuidName).fileSize(size).fileStatus(FileStatus.PENDING).contentType(contentType).build());
+              .objectName(objectName).fileSize(size).fileStatus(FileStatus.PENDING).contentType(contentType).build());
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url).fileId(metadata.getId())
           .expiresIn(LocalDateTime.now().plusMinutes(20)).build();
@@ -69,9 +82,12 @@ public class MinioStorageService {
       String decodedObjectName = URLDecoder.decode(objectName, StandardCharsets.UTF_8);
 
       FileMetadata metadata = fileMetadataRepository.findByObjectName(decodedObjectName)
-          .orElseThrow(() -> new RuntimeException("File metadata not found for: " + decodedObjectName));
+          .orElseThrow(() -> {
+            System.err.println("[MinioService] Error: Metadata NOT FOUND in database for object: " + decodedObjectName);
+            return new RuntimeException("File metadata not found for: " + decodedObjectName);
+          });
 
-      metadata.setFileStatus(FileStatus.CLEANED);
+      metadata.setFileStatus(FileStatus.UPLOADED);
       fileMetadataRepository.save(metadata);
 
       FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(metadata.getId())

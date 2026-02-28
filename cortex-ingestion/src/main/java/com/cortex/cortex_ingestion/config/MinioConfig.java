@@ -49,6 +49,7 @@ public class MinioConfig {
   public MinioClient presignedUrlClient() {
     // Falls back to internal url if externalUrl is not set (e.g. in Prod/GCP)
     String effectiveUrl = (externalUrl != null && !externalUrl.isEmpty()) ? externalUrl : url;
+    System.out.println("Effective MinIO URL: " + effectiveUrl);
     return MinioClient.builder()
         .endpoint(effectiveUrl)
         .credentials(accessKey, secretKey)
