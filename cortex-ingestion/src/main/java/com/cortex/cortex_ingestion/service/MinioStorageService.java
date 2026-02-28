@@ -43,6 +43,7 @@ public class MinioStorageService {
     }
 
     String objectName = UUID.randomUUID().toString() + extension;
+    log.info("[MinioService] Generated objectName: {}", objectName);
 
     try {
       java.util.Map<String, String> headers = new java.util.HashMap<>();
@@ -81,6 +82,7 @@ public class MinioStorageService {
           });
 
       metadata.setFileStatus(FileStatus.UPLOADED);
+      log.info("[MinioService] Updating status for object: {} (ID: {})", decodedObjectName, metadata.getId());
       fileMetadataRepository.save(metadata);
 
       FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(metadata.getId())
