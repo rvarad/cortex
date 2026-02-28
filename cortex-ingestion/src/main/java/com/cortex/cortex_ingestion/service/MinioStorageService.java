@@ -6,7 +6,6 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,25 +19,16 @@ import com.cortex.cortex_ingestion.repository.FileMetadataRepository;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.http.Method;
+import lombok.RequiredArgsConstructor;
 
 @Service
+@RequiredArgsConstructor
 public class MinioStorageService {
 
   private final MinioClient minioClient;
   private final MinioClient presignedUrlClient;
   private final FileMetadataRepository fileMetadataRepository;
   private final KafkaProducerService kafkaProducerService;
-
-  public MinioStorageService(
-      MinioClient minioClient,
-      @Qualifier("presignedUrlClient") MinioClient presignedUrlClient,
-      FileMetadataRepository fileMetadataRepository,
-      KafkaProducerService kafkaProducerService) {
-    this.minioClient = minioClient;
-    this.presignedUrlClient = presignedUrlClient;
-    this.fileMetadataRepository = fileMetadataRepository;
-    this.kafkaProducerService = kafkaProducerService;
-  }
 
   @Value("${minio.bucket}")
   private String quarantineBucket;
