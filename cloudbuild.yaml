@@ -29,6 +29,39 @@ steps:
       - 'us-central1'
     id: 'deploy-ingestion'
 
+  # 4. Build the Docker image for cortex-event-router
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-event-router',
+      '-f', 'cortex-event-router/Dockerfile',
+      '.'
+    ]
+    id: 'build-event-router'
+    waitFor: ['-'] # Start in parallel with other builds if possible
+    env:
+      - 'DOCKER_BUILDKIT=1'
+
+  # 5. Push the event router image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-event-router']
+    id: 'push-event-router'
+    waitFor: ['build-event-router']
+
+  # 6. Deploy event router to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'cortex-event-router'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cortex-repo/cortex-event-router'
+      - '--region'
+      - 'us-central1'
+    id: 'deploy-event-router'
+    waitFor: ['push-event-router']
+
 options:
-  machineType: 'E2_HIGHCPU_8' # Speed up the Maven build
+  machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
