@@ -20,7 +20,9 @@ import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.http.Method;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class MinioStorageService {
@@ -59,6 +61,7 @@ public class MinioStorageService {
           .save(FileMetadata.builder().fileDisplayName(originalFilename).bucketName(quarantineBucket)
               .objectName(objectName).fileSize(size).fileStatus(FileStatus.PENDING).contentType(contentType).build());
 
+      log.info("Generated presigned url for file: {}", url);
       return GetPresignedURLResponseDTO.builder().uploadUrl(url).fileId(metadata.getId())
           .expiresIn(LocalDateTime.now().plusMinutes(20)).build();
     } catch (Exception e) {
@@ -83,6 +86,8 @@ public class MinioStorageService {
       FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(metadata.getId())
           .objectName(decodedObjectName).contentType(metadata.getContentType()).fileSize(metadata.getFileSize())
           .fileStatus(metadata.getFileStatus().toString()).build();
+
+      log.info("Sending file ingested event for file: {}", event);
 
       kafkaProducerService.sendFileIngestedEvent(event);
     } catch (Exception e) {

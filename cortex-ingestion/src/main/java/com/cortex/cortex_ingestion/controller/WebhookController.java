@@ -13,6 +13,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.cortex.cortex_ingestion.service.MinioStorageService;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @RestController
 @RequestMapping("/api/webhook")
 public class WebhookController {
@@ -49,23 +52,23 @@ public class WebhookController {
       @RequestHeader(value = "ce-type", required = false) String type,
       @RequestBody Map<String, Object> eventPayload) {
 
-    System.out.println("Received CloudEvent notification:");
-    System.out.println(" - Subject (Object): " + objectName);
-    System.out.println(" - Source: " + source);
-    System.out.println(" - Type: " + type);
-    System.out.println(" - Payload: " + eventPayload);
+    log.info("Received CloudEvent notification:");
+    log.info(" - Subject (Object): " + objectName);
+    log.info(" - Source: " + source);
+    log.info(" - Type: " + type);
+    log.info(" - Payload: " + eventPayload);
 
     if (objectName != null && !objectName.isEmpty()) {
       // The objectName from GCS looks like "objects/quarantine/uuid.mp4"
       // We extract only the last part (the filename) to match our database ID.
       String fileNameOnly = objectName.substring(objectName.lastIndexOf('/') + 1);
 
-      System.out.println("Processing file ID: " + fileNameOnly);
+      log.info("Processing file ID: " + fileNameOnly);
       minioStorageService.handleFileUploadNotification(fileNameOnly);
       return ResponseEntity.ok().build();
     }
 
-    System.err.println("CloudEvent missing subject (object name). Payload: " + eventPayload);
+    log.error("CloudEvent missing subject (object name). Payload: " + eventPayload);
     return ResponseEntity.badRequest().build();
   }
 }

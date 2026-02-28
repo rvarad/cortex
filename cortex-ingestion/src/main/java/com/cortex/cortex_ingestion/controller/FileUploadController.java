@@ -10,6 +10,9 @@ import com.cortex.cortex_ingestion.dto.GetPresignedURLRequestDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.service.MinioStorageService;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @RestController
 @RequestMapping("/files")
 public class FileUploadController {
@@ -24,6 +27,7 @@ public class FileUploadController {
   @PostMapping("/upload")
   public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
       @RequestBody GetPresignedURLRequestDTO requestBody) {
+    log.info("Received request for presigned url for file: {}", requestBody);
     GetPresignedURLResponseDTO uploadUrl = minioStorageService.getPresignedUrl(requestBody.getFilename(),
         requestBody.getContentType(), requestBody.getSize());
 
