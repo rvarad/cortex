@@ -71,17 +71,22 @@
 
 
 		<!-- https://mvnrepository.com/artifact/io.minio/minio -->
-		<dependency>
+		<!-- <dependency>
 			<groupId>io.minio</groupId>
 			<artifactId>minio</artifactId>
 			<version>8.6.0</version>
-		</dependency>
+		</dependency> -->
 
 		<!-- OkHttp - required by Minio -->
-		<dependency>
+		<!-- <dependency>
 			<groupId>com.squareup.okhttp3</groupId>
 			<artifactId>okhttp</artifactId>
 			<version>4.12.0</version>
+		</dependency> -->
+
+		<dependency>
+			<groupId>com.google.cloud</groupId>
+			<artifactId>spring-cloud-gcp-starter-storage</artifactId>
 		</dependency>
 
 		<!-- common -->
@@ -195,6 +200,14 @@
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
+
+			<dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>spring-cloud-gcp-dependencies</artifactId>
+            <version>7.4.5</version> <!-- or latest -->
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
 		</dependencies>
 	</dependencyManagement>
 

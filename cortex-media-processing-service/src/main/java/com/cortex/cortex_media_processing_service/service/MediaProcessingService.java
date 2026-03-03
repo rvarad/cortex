@@ -50,7 +50,7 @@ public class MediaProcessingService {
     FAILED
   }
 
-  private final MinioStorageService minioStorageService;
+  private final GcsStorageService gcsStorageService;
 
   private final MediaChunkRepository mediaChunkRepository;
 
@@ -101,7 +101,7 @@ public class MediaProcessingService {
     chunkPairMap.clear();
 
     try {
-      String streamUrl = minioStorageService.getPresignedUrl(objectName);
+      String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
       MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl);
       if (manifestDTO.isCorrupted()) {
@@ -132,17 +132,18 @@ public class MediaProcessingService {
         throw new Exception("FFmpeg process failed with exit code: " + exitCode);
       }
 
-      isRunning.set(false);
       log.info("FFmpeg process completed successfully");
 
       // Cleanup: sweep remaining chunks, upload, and delete working directory
       cleanUpWorkingDir(workDir, objectName);
 
+      isRunning.set(false);
+      log.info("Media processing completed and cleaned up.");
+
     } catch (Exception e) {
       log.error("FFmpeg execution failed", e);
+      isRunning.set(false); // Ensure we signal shutdown even on error
       throw new RuntimeException("Failed to process media file: " + objectName + " exception: " + e);
-    } finally {
-      isRunning.set(false);
     }
   }
 
@@ -372,7 +373,7 @@ public class MediaProcessingService {
       int index = extractChunkNumber(fileName);
 
       log.info("Uploading chunk: {}", fileName);
-      String minioPath = minioStorageService.uploadChunk(objectName, chunkPath);
+      String gcsPath = gcsStorageService.uploadChunk(objectName, chunkPath);
 
       chunkRegistry.put(chunkPath.toString(), UploadStatus.UPLOADED);
 
@@ -383,9 +384,9 @@ public class MediaProcessingService {
           v.setEnd_s(Math.min((index + 1) * AUDIO_CHUNK_DURATION_S, manifestDTO.getDuration_s()));
         }
         if (fileName.contains("video")) {
-          v.setVideoPath(minioPath);
+          v.setVideoPath(gcsPath);
         } else if (fileName.contains("audio")) {
-          v.setAudioPath(minioPath);
+          v.setAudioPath(gcsPath);
         }
         return v;
       });
@@ -411,6 +412,7 @@ public class MediaProcessingService {
       // Retry logic
     } finally {
       uploadSlots.release();
+
     }
   }
 
@@ -487,6 +489,7 @@ public class MediaProcessingService {
   private void safeEnqueue(Path path) {
     UploadStatus currentStatus = chunkRegistry.get(path.toString());
     if (currentStatus == UploadStatus.UPLOADED || currentStatus == UploadStatus.IN_PROGRESS) {
+      log.info("Chunk {} is already being processed or uploaded. Skipping.", path.getFileName());
       return;
     }
     chunkRegistry.put(path.toString(), UploadStatus.PENDING);
