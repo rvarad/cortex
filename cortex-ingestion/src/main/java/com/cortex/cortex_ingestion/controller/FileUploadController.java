@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.cortex.cortex_ingestion.dto.GetPresignedURLRequestDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
-import com.cortex.cortex_ingestion.service.MinioStorageService;
+import com.cortex.cortex_ingestion.service.GcsStorageService;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -18,17 +18,17 @@ import lombok.extern.slf4j.Slf4j;
 public class FileUploadController {
 
   // private final FileStorageService fileStorageService;
-  private final MinioStorageService minioStorageService;
+  private final GcsStorageService gcsStorageService;
 
-  public FileUploadController(MinioStorageService minioStorageService) {
-    this.minioStorageService = minioStorageService;
+  public FileUploadController(GcsStorageService gcsStorageService) {
+    this.gcsStorageService = gcsStorageService;
   }
 
   @PostMapping("/upload")
   public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
       @RequestBody GetPresignedURLRequestDTO requestBody) {
     log.info("Received request for presigned url for file: {}", requestBody);
-    GetPresignedURLResponseDTO uploadUrl = minioStorageService.getPresignedUrl(requestBody.getFilename(),
+    GetPresignedURLResponseDTO uploadUrl = gcsStorageService.getPresignedURL(requestBody.getFilename(),
         requestBody.getContentType(), requestBody.getSize());
 
     return ResponseEntity.ok(uploadUrl);

@@ -1,9 +1,7 @@
 package com.cortex.cortex_ingestion.controller;
 
-import java.util.List;
 import java.util.Map;
 
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -11,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.cortex.cortex_ingestion.service.MinioStorageService;
+import com.cortex.cortex_ingestion.service.GcsStorageService;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -20,29 +18,10 @@ import lombok.extern.slf4j.Slf4j;
 @RequestMapping("/api/webhook")
 public class WebhookController {
 
-  private final MinioStorageService minioStorageService;
+  private final GcsStorageService gcsStorageService;
 
-  public WebhookController(MinioStorageService minioStorageService) {
-    this.minioStorageService = minioStorageService;
-  }
-
-  @Profile("dev")
-  @PostMapping("/minio")
-  public ResponseEntity<String> handleMinioEvent(@RequestBody Map<String, Object> eventPayload) {
-    System.out.println("Received Minio event: " + eventPayload);
-
-    if (eventPayload.containsKey("Records")) {
-      List<Map<String, Object>> records = (List<Map<String, Object>>) eventPayload.get("Records");
-
-      for (Map<String, Object> record : records) {
-        Map<String, Object> s3 = (Map<String, Object>) record.get("s3");
-        Map<String, Object> object = (Map<String, Object>) s3.get("object");
-        String objectName = (String) object.get("key");
-
-        minioStorageService.handleFileUploadNotification(objectName);
-      }
-    }
-    return ResponseEntity.ok("Minio event received successfully");
+  public WebhookController(GcsStorageService gcsStorageService) {
+    this.gcsStorageService = gcsStorageService;
   }
 
   @PostMapping("/notify-upload")
@@ -64,7 +43,7 @@ public class WebhookController {
       String fileNameOnly = objectName.substring(objectName.lastIndexOf('/') + 1);
 
       log.info("Processing file ID: " + fileNameOnly);
-      minioStorageService.handleFileUploadNotification(fileNameOnly);
+      gcsStorageService.handleFileUploadSuccess(fileNameOnly);
       return ResponseEntity.ok().build();
     }
 
