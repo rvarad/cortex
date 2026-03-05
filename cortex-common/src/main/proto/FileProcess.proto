@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+package com.cortex.common.grpc;
+
+message FileProcessRequest {
+  string chunkId = 1;
+  string objectName = 2;
+  int32 chunkIndex = 3;
+  double start_s = 4;
+  double end_s = 5;
+  string videoPath = 6;
+  string audioPath = 7;
+}

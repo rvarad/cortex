@@ -31,7 +31,7 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.MediaFileManifestDTO;
-import com.cortex.cortex_media_processing_service.model.MediaChunk;
+import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_media_processing_service.repository.MediaChunkRepository;
 
 import lombok.Data;

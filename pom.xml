@@ -15,5 +15,6 @@
         <module>cortex-event-router</module>
         <module>cortex-ingestion</module>
         <module>cortex-media-processing-service</module>
+        <module>rag-orchestration</module>
     </modules>
 </project>

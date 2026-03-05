@@ -1,4 +1,4 @@
-package com.cortex.cortex_media_processing_service.repository;
+package com.cortex.rag_orchestration.repository;
 
 import java.util.UUID;
 
