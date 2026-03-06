@@ -1,4 +1,4 @@
-package com.cortex.rag_orchestration.service;
+package com.cortex.cortex_rag_orchestration.service;
 
 import java.io.InputStream;
 

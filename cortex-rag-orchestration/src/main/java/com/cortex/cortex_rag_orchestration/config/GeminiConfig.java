@@ -1,4 +1,4 @@
-package com.cortex.rag_orchestration.config;
+package com.cortex.cortex_rag_orchestration.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;

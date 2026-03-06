@@ -10,9 +10,9 @@
 		<relativePath /> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.cortex</groupId>
-	<artifactId>rag-orchestration</artifactId>
+	<artifactId>cortex-rag-orchestration</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>rag-orchestration</name>
+	<name>cortex-rag-orchestration</name>
 	<description>RAG orchestration</description>
 	<url />
 	<licenses>

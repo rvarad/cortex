@@ -1,10 +1,10 @@
-package com.cortex.rag_orchestration;
+package com.cortex.cortex_rag_orchestration;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class RagOrchestrationApplicationTests {
+class CortexRagOrchestrationApplicationTests {
 
 	@Test
 	void contextLoads() {

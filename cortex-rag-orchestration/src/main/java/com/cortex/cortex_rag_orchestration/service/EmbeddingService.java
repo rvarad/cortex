@@ -1,4 +1,4 @@
-package com.cortex.rag_orchestration.service;
+package com.cortex.cortex_rag_orchestration.service;
 
 import java.util.UUID;
 
@@ -7,7 +7,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.model.MediaChunk;
-import com.cortex.rag_orchestration.repository.MediaChunkRepository;
+import com.cortex.cortex_rag_orchestration.repository.MediaChunkRepository;
 
 import lombok.extern.slf4j.Slf4j;
 

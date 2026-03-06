@@ -13,24 +13,6 @@ services:
     networks:
       - cortex-net
 
-  minio-server:
-    image: minio/minio:latest
-    container_name: minio-server
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minio_admin
-      MINIO_ROOT_PASSWORD: minio_password
-      MINIO_NOTIFY_WEBHOOK_ENABLE_primary: "on"
-      MINIO_NOTIFY_WEBHOOK_ENDPOINT_primary: "http://host.docker.internal:8080/api/webhook/minio"
-    volumes:
-      - ../cortex_data/minio:/data
-    networks:
-      - cortex-net
-
-
   kafka:
     image: apache/kafka:latest
     container_name: kafka-server
@@ -77,21 +59,6 @@ services:
     depends_on:
       - postgres
 
-  cortex-event-router:
-    build:
-      context: .
-      dockerfile: cortex-event-router/Dockerfile
-    container_name: cortex-event-router
-    ports:
-      - "8081:8081"
-    environment:
-      - SPRING_PROFILES_ACTIVE=dev
-      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
-    depends_on:
-      - kafka
-    networks:
-      - cortex-net
-
   cortex-ingestion:
     build:
       context: .
@@ -100,16 +67,17 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - SPRING_PROFILES_ACTIVE=dev
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-db:5432/postgres
-      - MINIO_URL=http://minio-server:9000
-      - MINIO_EXTERNAL_URL=http://localhost:9000
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+      - GCP_PROJECT_ID=project-5895ee34-7879-444a-997
+      - GCS_BUCKET_NAME=cortex-dev-bucket
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+    volumes:
+      - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres
-      - minio-server
       - kafka
-      - cortex-event-router
     networks:
       - cortex-net
 
@@ -121,12 +89,38 @@ services:
     ports:
       - "8082:8082"
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-db:5432/postgres
-      - MINIO_URL=http://minio-server:9000
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+      - GCP_PROJECT_ID=project-5895ee34-7879-444a-997
+      - GCS_BUCKET_NAME=cortex-dev-bucket
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+    volumes:
+      - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres
-      - minio-server
+      - kafka
+    networks:
+      - cortex-net
+
+  cortex-rag-orchestration:
+    build:
+      context: .
+      dockerfile: cortex-rag-orchestration/Dockerfile
+    container_name: cortex-rag-orchestration
+    ports:
+      - "8083:8083"
+    environment:
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
+      - GCP_PROJECT_ID=project-5895ee34-7879-444a-997
+      - GCS_BUCKET_NAME=cortex-dev-bucket
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+    volumes:
+      - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
+    depends_on:
+      - postgres
       - kafka
     networks:
       - cortex-net

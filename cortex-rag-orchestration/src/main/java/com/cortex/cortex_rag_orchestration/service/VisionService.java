@@ -1,4 +1,4 @@
-package com.cortex.rag_orchestration.service;
+package com.cortex.cortex_rag_orchestration.service;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -24,7 +24,7 @@ public class VisionService {
 
   private final GcsStorageService gcsStorageService;
 
-  private final RateLimiter inferenceRateLimiter = RateLimiter.create(15 / 60.0);
+  private final RateLimiter inferenceRateLimiter = RateLimiter.create(1);
 
   private static final String MODEL_NAME = "gemini-2.5-flash";
 
