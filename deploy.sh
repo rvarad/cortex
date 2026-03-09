@@ -7,7 +7,7 @@ set -e
 # GCP Project & Region (Auto-detected from VM environment)
 PROJECT_ID=$(gcloud config get-value project)
 REGION="asia-south1" # You can also auto-detect this if you want, but hardcoding region is usually fine.
-DB_INSTANCE_CONNECTION_NAME="${PROJECT_ID}:${REGION}:cortex-db"
+DB_INSTANCE_CONNECTION_NAME="${PROJECT_ID}:${REGION}:cortex-prod-db"
 GCS_BUCKET="cortex-prod-bucket"
 
 # Kafka (Aiven)
@@ -80,16 +80,11 @@ export KAFKA_SSL_KEYSTORE_PASSWORD=changeit
 export KAFKA_SSL_TRUSTSTORE_PASSWORD=changeit
 
 # ==========================================
-# 3. BUILD & DEPLOY
+# 3. DEPLOY
 # ==========================================
 
-echo "🔄 Pulling latest code..."
-git pull origin main
-
-echo "🏗️ Building JARs (Skipping tests for speed)..."
-./mvnw clean package -DskipTests
-
 echo "🚀 Starting Docker containers..."
+# --build ensures the multi-stage build happens inside Docker
 docker-compose -f docker-compose.prod.yaml up -d --build --remove-orphans
 
 echo "✅ Deployment Complete!"
