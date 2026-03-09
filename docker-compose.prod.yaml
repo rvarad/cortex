@@ -1,0 +1,125 @@
+services:
+  # Cloud SQL Auth Proxy (Secure DB Connection)
+  cloud-sql-proxy:
+    image: gcr.io/cloudsql-docker/gce-proxy:1.33.2
+    container_name: cloud-sql-proxy
+    command:
+      - "/cloud_sql_proxy"
+      - "-instances=${DB_INSTANCE_CONNECTION_NAME}=tcp:0.0.0.0:5432"
+    ports:
+      - "5432:5432"
+    restart: always
+
+  cortex-ingestion:
+    build:
+      context: .
+      dockerfile: cortex-ingestion/Dockerfile
+    container_name: cortex-ingestion
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      # GCP
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # Database (Connects to proxy)
+      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=${DB_PASSWORD}
+      # Kafka (mTLS via mounted certs)
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL=SSL
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION=${KAFKA_SSL_TRUSTSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD=${KAFKA_SSL_TRUSTSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION=${KAFKA_SSL_KEYSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_PASSWORD=${KAFKA_SSL_KEYSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
+    depends_on:
+      - cloud-sql-proxy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cortex-media-processing-service:
+    build:
+      context: .
+      dockerfile: cortex-media-processing-service/Dockerfile
+    container_name: cortex-media-processing-service
+    restart: always
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      # GCP
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # Database
+      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=${DB_PASSWORD}
+      # Kafka
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL=SSL
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION=${KAFKA_SSL_TRUSTSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD=${KAFKA_SSL_TRUSTSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION=${KAFKA_SSL_KEYSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_PASSWORD=${KAFKA_SSL_KEYSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+      # AI Keys
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_BASE_URL=https://api.groq.com/openai
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
+    depends_on:
+      - cloud-sql-proxy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cortex-rag-orchestration:
+    build:
+      context: .
+      dockerfile: cortex-rag-orchestration/Dockerfile
+    container_name: cortex-rag-orchestration
+    restart: always
+    ports:
+      - "8083:8083"
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
+      # GCP
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCP_LOCATION=${GCP_LOCATION}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # Database
+      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=${DB_PASSWORD}
+      # Kafka
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL=SSL
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION=${KAFKA_SSL_TRUSTSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD=${KAFKA_SSL_TRUSTSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION=${KAFKA_SSL_KEYSTORE_LOCATION}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_PASSWORD=${KAFKA_SSL_KEYSTORE_PASSWORD}
+      - SPRING_KAFKA_PROPERTIES_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+      # AI Keys
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_BASE_URL=https://api.groq.com/openai
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
+    depends_on:
+      - cloud-sql-proxy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
