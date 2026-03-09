@@ -85,6 +85,6 @@ export KAFKA_SSL_TRUSTSTORE_PASSWORD=changeit
 
 echo "🚀 Starting Docker containers..."
 # --build ensures the multi-stage build happens inside Docker
-docker-compose -f docker-compose.prod.yaml up -d --build --remove-orphans
+docker compose -f docker-compose.prod.yaml up -d --build --remove-orphans
 
 echo "✅ Deployment Complete!"
