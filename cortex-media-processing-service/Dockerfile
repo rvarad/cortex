@@ -13,7 +13,7 @@ RUN mvn install -pl cortex-common -DskipTests && \
 FROM mwader/static-ffmpeg:7.1 AS ffmpeg
 
 # Run stage
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre-jammy
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/
 COPY --from=ffmpeg /ffprobe /usr/local/bin/
 WORKDIR /app

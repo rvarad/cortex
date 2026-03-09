@@ -10,7 +10,7 @@ RUN mvn install -pl cortex-common -DskipTests && \
     mvn package -pl cortex-ingestion -am -DskipTests
 
 # Run stage
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
 # Copy the fat jar from the build stage
