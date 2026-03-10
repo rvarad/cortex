@@ -41,6 +41,12 @@ public class WebhookController {
       // The objectName from GCS looks like "objects/uploads/media/uuid.mp4"
       String normalizedObjectName = objectName.startsWith("objects/") ? objectName.substring(8) : objectName;
 
+      // BREAK THE INFINITE LOOP: Only process initial media uploads
+      if (!normalizedObjectName.startsWith("uploads/media/")) {
+        log.info("Ignoring event for non-media path: " + normalizedObjectName);
+        return ResponseEntity.ok().build();
+      }
+
       log.info("Processing file: " + normalizedObjectName);
       gcsStorageService.handleFileUploadSuccess(normalizedObjectName);
       return ResponseEntity.ok().build();
