@@ -38,12 +38,11 @@ public class WebhookController {
     log.info(" - Payload: " + eventPayload);
 
     if (objectName != null && !objectName.isEmpty()) {
-      // The objectName from GCS looks like "objects/quarantine/uuid.mp4"
-      // We extract only the last part (the filename) to match our database ID.
-      String fileNameOnly = objectName.substring(objectName.lastIndexOf('/') + 1);
+      // The objectName from GCS looks like "objects/uploads/media/uuid.mp4"
+      String normalizedObjectName = objectName.startsWith("objects/") ? objectName.substring(8) : objectName;
 
-      log.info("Processing file ID: " + fileNameOnly);
-      gcsStorageService.handleFileUploadSuccess(fileNameOnly);
+      log.info("Processing file: " + normalizedObjectName);
+      gcsStorageService.handleFileUploadSuccess(normalizedObjectName);
       return ResponseEntity.ok().build();
     }
 

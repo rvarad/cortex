@@ -46,7 +46,7 @@ public class GcsStorageService {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
     }
 
-    String objectName = UUID.randomUUID().toString() + extension;
+    String objectName = "uploads/media/" + UUID.randomUUID().toString() + extension;
     log.info("[GCSService] Generated objectName: {}", objectName);
 
     try {
