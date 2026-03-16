@@ -7,7 +7,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.model.MediaChunk;
-import com.cortex.cortex_rag_orchestration.repository.MediaChunkRepository;
+import com.cortex.cortex_common.repository.MediaChunkRepository;
 
 import lombok.extern.slf4j.Slf4j;
 

@@ -50,7 +50,7 @@ public class GcsStorageService {
     String contentType = fileName.toLowerCase().endsWith("mp4") ? "video/mp4" : "audio/wav";
 
     // Using a "chunks/" folder prefix within the same bucket
-    String fullGcsPath = "chunks/" + objectName + "/" + fileName;
+    String fullGcsPath = "chunks/" + objectName.replace("uploads/", "") + "/" + fileName;
     log.info("[GCSService] Uploading chunk to folder: {}", fullGcsPath);
     BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, fullGcsPath))
         .setContentType(contentType)

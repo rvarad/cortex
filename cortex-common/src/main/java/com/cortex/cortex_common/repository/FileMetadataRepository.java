@@ -1,4 +1,4 @@
-package com.cortex.cortex_ingestion.repository;
+package com.cortex.cortex_common.repository;
 
 import java.util.Optional;
 import java.util.UUID;

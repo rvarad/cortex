@@ -16,7 +16,7 @@ import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatus;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
-import com.cortex.cortex_ingestion.repository.FileMetadataRepository;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.HttpMethod;

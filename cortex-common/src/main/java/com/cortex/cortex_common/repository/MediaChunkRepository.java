@@ -1,4 +1,4 @@
-package com.cortex.cortex_rag_orchestration.repository;
+package com.cortex.cortex_common.repository;
 
 import java.util.UUID;
 

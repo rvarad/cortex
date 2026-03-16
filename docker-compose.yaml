@@ -73,6 +73,7 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:
@@ -95,6 +96,7 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:
@@ -117,6 +119,7 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:

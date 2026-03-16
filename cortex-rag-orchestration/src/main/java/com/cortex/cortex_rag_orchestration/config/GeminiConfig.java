@@ -6,6 +6,9 @@ import org.springframework.context.annotation.Configuration;
 
 import com.google.genai.Client;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Configuration
 public class GeminiConfig {
 
@@ -22,6 +25,7 @@ public class GeminiConfig {
     // We can safely convert a zone to a region by stripping the trailing "-[a-z]"
     // if it's present.
     String region = location.replaceAll("-[a-z]$", "");
+    log.info("[GeminiConfig] Initializing Client for Vertex AI. Project: {}, Location: {}", projectId, region);
 
     return Client.builder()
         .vertexAI(true)

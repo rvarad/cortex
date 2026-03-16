@@ -8,7 +8,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 @SpringBootApplication
 @EntityScan(basePackages = { "com.cortex.cortex_ingestion.model", "com.cortex.cortex_common.model" })
-@EnableJpaRepositories(basePackages = { "com.cortex.cortex_ingestion.repository" })
+@EnableJpaRepositories(basePackages = { "com.cortex.cortex_ingestion.repository", "com.cortex.cortex_common.repository" })
 public class CortexIngestionApplication {
 
 	public static void main(String[] args) {
