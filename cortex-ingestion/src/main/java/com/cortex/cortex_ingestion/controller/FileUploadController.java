@@ -36,7 +36,7 @@ public class FileUploadController {
       @RequestBody GetPresignedURLRequestDTO requestBody) {
     log.info("Received request for presigned url for file: {}", requestBody);
     GetPresignedURLResponseDTO uploadUrl = gcsStorageService.getPresignedURL(requestBody.getFilename(),
-        requestBody.getContentType());
+        requestBody.getContentType(), requestBody.getFileSize());
 
     return ResponseEntity.ok(uploadUrl);
   }

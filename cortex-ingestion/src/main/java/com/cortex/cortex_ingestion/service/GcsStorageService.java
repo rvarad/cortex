@@ -40,7 +40,7 @@ public class GcsStorageService {
   private String bucketName;
 
   @Transactional
-  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType) {
+  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, long fileSize) {
     String extension = "";
     if (originalFileName != null && originalFileName.contains(".")) {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
@@ -63,7 +63,7 @@ public class GcsStorageService {
       log.info("[GCSService] Generated presigned URL: {}", url);
 
       FileMetadata fileMetadata = fileMetadataRepository
-          .save(FileMetadata.builder().fileDisplayName(originalFileName).objectName(objectName)
+          .save(FileMetadata.builder().fileDisplayName(originalFileName).objectName(objectName).fileSize(fileSize)
               .bucketName(bucketName).fileStatus(FileStatus.PENDING).contentType(contentType).build());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 

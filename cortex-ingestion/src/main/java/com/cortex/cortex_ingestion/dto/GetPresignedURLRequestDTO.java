@@ -12,4 +12,5 @@ import lombok.NoArgsConstructor;
 public class GetPresignedURLRequestDTO {
   private String filename;
   private String contentType;
+  private Long fileSize;
 }
