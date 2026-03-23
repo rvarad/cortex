@@ -15,8 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatus;
-import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
+import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.HttpMethod;
@@ -40,11 +40,14 @@ public class GcsStorageService {
   private String bucketName;
 
   @Transactional
-  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, long fileSize) {
+  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, Long fileSize) {
     String extension = "";
     if (originalFileName != null && originalFileName.contains(".")) {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
     }
+
+    // Default to 0 if size is not provided
+    long safeSize = (fileSize != null) ? fileSize : 0L;
 
     String objectName = "uploads/media/" + UUID.randomUUID().toString() + extension;
     log.info("[GCSService] Generated objectName: {}", objectName);
@@ -63,7 +66,7 @@ public class GcsStorageService {
       log.info("[GCSService] Generated presigned URL: {}", url);
 
       FileMetadata fileMetadata = fileMetadataRepository
-          .save(FileMetadata.builder().fileDisplayName(originalFileName).objectName(objectName).fileSize(fileSize)
+          .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
               .bucketName(bucketName).fileStatus(FileStatus.PENDING).contentType(contentType).build());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
