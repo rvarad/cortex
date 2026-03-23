@@ -52,6 +52,9 @@ public class MediaChunk {
   @Enumerated(EnumType.STRING)
   private Status status;
 
+  @Column
+  private String languageCode;
+
   @Column(columnDefinition = "TEXT")
   private String transcript;
 

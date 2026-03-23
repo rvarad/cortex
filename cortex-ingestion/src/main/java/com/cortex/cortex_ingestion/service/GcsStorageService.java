@@ -40,7 +40,7 @@ public class GcsStorageService {
   private String bucketName;
 
   @Transactional
-  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, Long size) {
+  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType) {
     String extension = "";
     if (originalFileName != null && originalFileName.contains(".")) {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
@@ -63,7 +63,7 @@ public class GcsStorageService {
       log.info("[GCSService] Generated presigned URL: {}", url);
 
       FileMetadata fileMetadata = fileMetadataRepository
-          .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(size).objectName(objectName)
+          .save(FileMetadata.builder().fileDisplayName(originalFileName).objectName(objectName)
               .bucketName(bucketName).fileStatus(FileStatus.PENDING).contentType(contentType).build());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
@@ -76,7 +76,7 @@ public class GcsStorageService {
     }
   }
 
-  public void handleFileUploadSuccess(String objectName) {
+  public void handleFileUploadSuccess(String objectName, long size) {
     try {
       String decodedObjectName = URLDecoder.decode(objectName, StandardCharsets.UTF_8);
 
@@ -84,6 +84,12 @@ public class GcsStorageService {
         log.error("[GCSService] File metadata not found for objectName: {}", decodedObjectName);
         return new RuntimeException("File metadata not found for objectName: " + decodedObjectName);
       });
+
+      // Update size if provided (and greater than 0), as the initial metadata might
+      // have had 0 or estimated size
+      if (size > 0) {
+        fileMetadata.setFileSize(size);
+      }
 
       fileMetadata.setFileStatus(FileStatus.UPLOADED);
       fileMetadataRepository.save(fileMetadata);

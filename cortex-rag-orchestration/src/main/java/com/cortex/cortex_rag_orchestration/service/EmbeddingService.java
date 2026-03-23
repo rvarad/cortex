@@ -27,7 +27,8 @@ public class EmbeddingService {
     this.mediaChunkRepository = mediaChunkRepository;
   }
 
-  public void generateAndSaveEmbedding(String visualSummary, String transcript, UUID chunkId, int chunkIndex) {
+  public void generateAndSaveEmbedding(String visualSummary, String transcript, UUID chunkId, int chunkIndex,
+      String languageCode) {
     try {
       log.info("Generating embedding for chunkId: {}, chunkIndex: {}", chunkId, chunkIndex);
 
@@ -40,6 +41,7 @@ public class EmbeddingService {
 
       chunk.setVisualSummary(visualSummary);
       chunk.setTranscript(transcript);
+      chunk.setLanguageCode(languageCode);
       chunk.setEmbedding(vector);
       chunk.setStatus(MediaChunk.Status.COMPLETED);
 
@@ -51,5 +53,4 @@ public class EmbeddingService {
       throw new RuntimeException("Failed to update MediaChunk for chunk: " + chunkId, e);
     }
   }
-
 }

@@ -35,21 +35,23 @@ public class OrchestrationService {
               executorService)
           : CompletableFuture.completedFuture("");
 
-      CompletableFuture<String> transcriptionFuture = event.getAudioPath() != null && !event.getAudioPath().isEmpty()
-          ? CompletableFuture.supplyAsync(() -> transcriptionService.transcribe(event.getAudioPath()),
-              executorService)
-          : CompletableFuture.completedFuture("");
+      CompletableFuture<TranscriptionService.TranscriptionResult> transcriptionFuture = event.getAudioPath() != null
+          && !event.getAudioPath().isEmpty()
+              ? CompletableFuture.supplyAsync(() -> transcriptionService.transcribe(event.getAudioPath()),
+                  executorService)
+              : CompletableFuture.completedFuture(new TranscriptionService.TranscriptionResult("", null));
 
       CompletableFuture.allOf(visionFuture, transcriptionFuture).join();
 
       String visionDescription = visionFuture.get();
-      String transcription = transcriptionFuture.get();
+      TranscriptionService.TranscriptionResult transcriptionResult = transcriptionFuture.get();
 
       log.info("Vision Description: {}", visionDescription);
-      log.info("Audio Transcription: {}", transcription);
+      log.info("Audio Transcription: {}", transcriptionResult.transcript());
+      log.info("Detected Language: {}", transcriptionResult.languageCode());
 
-      embeddingService.generateAndSaveEmbedding(visionDescription, transcription, event.getChunkId(),
-          event.getChunkIndex());
+      embeddingService.generateAndSaveEmbedding(visionDescription, transcriptionResult.transcript(), event.getChunkId(),
+          event.getChunkIndex(), transcriptionResult.languageCode());
     } catch (Exception e) {
       log.error("Error processing media chunk for object: {}", event.getObjectName(), e);
     }

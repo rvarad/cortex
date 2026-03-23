@@ -35,6 +35,17 @@ public class WebhookController {
     log.info(" - Subject (Object): " + objectName);
     log.info(" - Source: " + source);
     log.info(" - Type: " + type);
+
+    // Extract size safely
+    long size = 0;
+    if (eventPayload != null && eventPayload.containsKey("size")) {
+      try {
+        size = Long.parseLong(eventPayload.get("size").toString());
+      } catch (NumberFormatException e) {
+        log.warn("Failed to parse size from payload: {}", eventPayload.get("size"));
+      }
+    }
+    log.info(" - Size: {} bytes", size);
     log.info(" - Payload: " + eventPayload);
 
     if (objectName != null && !objectName.isEmpty()) {
@@ -48,7 +59,7 @@ public class WebhookController {
       }
 
       log.info("Processing file: " + normalizedObjectName);
-      gcsStorageService.handleFileUploadSuccess(normalizedObjectName);
+      gcsStorageService.handleFileUploadSuccess(normalizedObjectName, size);
       return ResponseEntity.ok().build();
     }
 

@@ -155,6 +155,7 @@ public class MediaProcessingService {
           "-show_entries", "format=duration:stream=codec_type",
           "-of", "csv=p=0",
           streamUrl);
+      processBuilder.redirectErrorStream(true);
 
       Process process = processBuilder.start();
 
