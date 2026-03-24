@@ -17,7 +17,9 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.SearchRequestDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
+import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.MediaChunk;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -31,6 +33,8 @@ public class SearchService {
 
   private final MediaChunkRepository mediaChunkRepository;
 
+  private final FileMetadataRepository fileMetadataRepository;
+
   private final ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
 
   private static final int CANDIDATE_LIMIT = 100;
@@ -38,9 +42,10 @@ public class SearchService {
   private static final double RRF_K = 60;
 
   public SearchService(@Qualifier("googleGenAiTextEmbedding") EmbeddingModel embeddingModel,
-      MediaChunkRepository mediaChunkRepository) {
+      MediaChunkRepository mediaChunkRepository, FileMetadataRepository fileMetadataRepository) {
     this.embeddingModel = embeddingModel;
     this.mediaChunkRepository = mediaChunkRepository;
+    this.fileMetadataRepository = fileMetadataRepository;
   }
 
   public List<SearchResultDTO> search(SearchRequestDTO request) {
@@ -68,14 +73,26 @@ public class SearchService {
     Map<UUID, MediaChunk> chunks = mediaChunkRepository.findAllById(sortedScores).stream()
         .collect(Collectors.toMap(MediaChunk::getId, chunk -> chunk));
 
+    // Fetch FileMetadata for file names
+    List<UUID> uniqueFileIds = chunks.values().stream()
+        .map(MediaChunk::getFileId)
+        .distinct()
+        .toList();
+
+    Map<UUID, String> fileNames = fileMetadataRepository.findAllById(uniqueFileIds).stream()
+        .collect(Collectors.toMap(FileMetadata::getId, FileMetadata::getFileDisplayName));
+
     List<SearchResultDTO> results = new ArrayList<>();
 
     for (UUID id : sortedScores) {
       MediaChunk chunk = chunks.get(id);
 
       if (chunk != null) {
+        String displayName = fileNames.getOrDefault(chunk.getFileId(), "Unknown File");
+
         results.add(
-            SearchResultDTO.builder().id(id).fileId(chunk.getFileId()).objectName(chunk.getObjectName())
+            SearchResultDTO.builder().id(id).fileId(chunk.getFileId())
+                .fileDisplayName(displayName)
                 .chunkIndex(chunk.getChunkIndex()).startTime(chunk.getStartTime()).endTime(chunk.getEndTime())
                 .transcript(chunk.getTranscript()).visualSummary(chunk.getVisualSummary())
                 .languageCode(chunk.getLanguageCode()).score(scores.get(id)).build());

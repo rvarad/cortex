@@ -17,6 +17,8 @@ import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatus;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
+import com.google.api.gax.paging.Page;
+import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.HttpMethod;
@@ -111,4 +113,17 @@ public class GcsStorageService {
     }
   }
 
+  public void deleteObject(String objectName) {
+    storage.delete(BlobId.of(bucketName, objectName));
+    log.info("[GCSService] Deleted object for fileId: {}", objectName);
+
+    String chunksPrefix = "chunks/" + objectName.replace("uploads/", "") + "/";
+
+    Page<Blob> blobs = storage.list(bucketName, Storage.BlobListOption.prefix(chunksPrefix));
+
+    for (Blob blob : blobs.iterateAll()) {
+      storage.delete(blob.getBlobId());
+      log.info("[GCSService] Deleted chunk for objectName: {}", blob.getName());
+    }
+  }
 }

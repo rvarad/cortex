@@ -395,7 +395,7 @@ public class MediaProcessingService {
       if (chunkPair.isComplete(manifestDTO)) {
         log.info("Chunk pair {} is complete. Processing for persistence.", index);
 
-        MediaChunk chunk = mediaChunkRepository.save(MediaChunk.builder().fileId(fileId).objectName(objectName)
+        MediaChunk chunk = mediaChunkRepository.save(MediaChunk.builder().fileId(fileId)
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s()).build());
 
         kafkaTemplate.send("media-chunk-uploaded",

@@ -40,9 +40,6 @@ public class MediaChunk {
   @Column(nullable = false)
   private UUID fileId;
 
-  @Column(nullable = false)
-  private String objectName;
-
   private int chunkIndex;
 
   private double startTime;

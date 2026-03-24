@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 public class SearchResultDTO {
   private UUID id;
   private UUID fileId;
-  private String objectName;
+  private String fileDisplayName;
   private int chunkIndex;
   private double startTime;
   private double endTime;

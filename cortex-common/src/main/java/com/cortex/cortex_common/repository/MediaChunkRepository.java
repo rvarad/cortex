@@ -44,4 +44,6 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
             @Param("langCode") String langCode,
             @Param("fileId") UUID fileId,
             @Param("maxResults") int maxResults);
+
+    void deleteAllByFileId(UUID fileId);
 }

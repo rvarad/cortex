@@ -16,7 +16,6 @@ public class SearchRequestDTO {
   @NotBlank(message = "Search query cannot be empty")
   private String query;
   private UUID fileId;
-  private String objectName;
   private String languageCode;
 
   @Builder.Default
