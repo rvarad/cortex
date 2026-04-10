@@ -22,16 +22,23 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.MediaFileManifestDTO;
+import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
+import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 
 import lombok.Data;
@@ -54,7 +61,12 @@ public class MediaProcessingService {
 
   private final MediaChunkRepository mediaChunkRepository;
 
-  private final KafkaTemplate<String, ChunkUploadedEventDTO> kafkaTemplate;
+  private final FileMetadataRepository fileMetadataRepository;
+
+  private final KafkaTemplate<String, Object> kafkaTemplate;
+
+  @Value("${app.kafka.topic.pipeline-events}")
+  private String pipelineEventsTopic;
 
   // private final TranscriptionService transcriptionService;
 
@@ -64,6 +76,8 @@ public class MediaProcessingService {
   private static final int FFMPEG_PROCESSING_TIMEOUT_M = 30;
 
   private final AtomicLong lastChunkTimeMS = new AtomicLong(System.currentTimeMillis());
+
+  private final AtomicInteger totalChunks = new AtomicInteger(0);
 
   private static final String TEMP_DIRECTORY = "/tmp/media-processing-service-chunks";
 
@@ -120,6 +134,13 @@ public class MediaProcessingService {
       Thread.startVirtualThread(() -> startUploadDispatcher(objectName, fileId, manifestDTO));
 
       lastChunkTimeMS.set(System.currentTimeMillis());
+
+      totalChunks.set(0);
+
+      PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
+          .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
+      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+
       Process ffmpegProcess = startFFmpegProcess(streamUrl, videoPattern, audioPattern);
 
       Thread.startVirtualThread(() -> monitorFFmpegOutput(ffmpegProcess));
@@ -134,10 +155,27 @@ public class MediaProcessingService {
 
       log.info("FFmpeg process completed successfully");
 
-      // Cleanup: sweep remaining chunks, upload, and delete working directory
       cleanUpWorkingDir(workDir, objectName);
 
       isRunning.set(false);
+
+      int totalChunksCount = totalChunks.get();
+
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
+
+      if (fileMetadata != null) {
+        fileMetadata.setTotalChunks(totalChunksCount);
+        fileMetadata.setFileStatus(FileStatusEnum.CHUNKED);
+        fileMetadataRepository.save(fileMetadata);
+
+        log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
+      }
+
+      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+          PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.CHUNKING_COMPLETE)
+              .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
+              .build());
+
       log.info("Media processing completed and cleaned up.");
 
     } catch (Exception e) {
@@ -372,11 +410,23 @@ public class MediaProcessingService {
     try {
       String fileName = chunkPath.getFileName().toString();
       int index = extractChunkNumber(fileName);
+      String mediaType = fileName.contains("video") ? "video" : "audio";
 
       log.info("Uploading chunk: {}", fileName);
+
+      // Upload event for pipeline
+      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+          .eventType(PipelineEventEnum.CHUNK_UPLOAD_STARTED).chunkIndex(index)
+          .message(mediaType + " chunk upload started").metadata(Map.of("mediaType", mediaType)).build());
+
       String gcsPath = gcsStorageService.uploadChunk(objectName, chunkPath);
 
       chunkRegistry.put(chunkPath.toString(), UploadStatus.UPLOADED);
+
+      // Upload event for pipeline
+      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+          .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
+          .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
       ChunkPair chunkPair = chunkPairMap.compute(index, (k, v) -> {
         if (v == null) {
@@ -396,12 +446,20 @@ public class MediaProcessingService {
         log.info("Chunk pair {} is complete. Processing for persistence.", index);
 
         MediaChunk chunk = mediaChunkRepository.save(MediaChunk.builder().fileId(fileId)
-            .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s()).build());
+            .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
+            .status(MediaChunk.Status.UPLOADED).build());
+
+        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+            PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
+                .eventType(PipelineEventEnum.MEDIA_CHUNK_READY).chunkIndex(index)
+                .message("Media chunk ready for processing").metadata(Map.of("chunkId", chunk.getId())).build());
 
         kafkaTemplate.send("media-chunk-uploaded",
-            ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).objectName(objectName).chunkIndex(index)
-                .start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s()).videoPath(chunkPair.getVideoPath())
-                .audioPath(chunkPair.getAudioPath()).build());
+            ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).fileId(fileId).objectName(objectName)
+                .chunkIndex(index).start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s())
+                .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath()).build());
+
+        totalChunks.incrementAndGet();
 
         chunkPairMap.remove(index);
       }
@@ -413,7 +471,6 @@ public class MediaProcessingService {
       // Retry logic
     } finally {
       uploadSlots.release();
-
     }
   }
 
@@ -489,8 +546,9 @@ public class MediaProcessingService {
 
   private void safeEnqueue(Path path) {
     UploadStatus currentStatus = chunkRegistry.get(path.toString());
-    if (currentStatus == UploadStatus.UPLOADED || currentStatus == UploadStatus.IN_PROGRESS) {
-      log.info("Chunk {} is already being processed or uploaded. Skipping.", path.getFileName());
+    if (currentStatus == UploadStatus.UPLOADED || currentStatus == UploadStatus.IN_PROGRESS
+        || currentStatus == UploadStatus.PENDING) {
+      log.info("Chunk {} is already being processed or uploaded or is pending. Skipping.", path.getFileName());
       return;
     }
     chunkRegistry.put(path.toString(), UploadStatus.PENDING);

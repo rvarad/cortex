@@ -14,6 +14,7 @@ import lombok.NoArgsConstructor;
 public class ChunkUploadedEventDTO {
 
   private UUID chunkId;
+  private UUID fileId;
   private String objectName;
   private int chunkIndex;
   private double start_s;

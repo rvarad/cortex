@@ -1,9 +1,13 @@
-package com.cortex.cortex_common.model;
+package com.cortex.cortex_ingestion.model;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 import org.springframework.lang.NonNull;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import com.cortex.cortex_common.model.PipelineEventEnum;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -26,46 +30,38 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 @Entity
-@Table(name = "file_metadata")
-public class FileMetadata {
+@Table(name = "pipeline_events")
+public class PipelineEvent {
 
   @Id
   @GeneratedValue(strategy = GenerationType.UUID)
   private UUID id;
 
   @NonNull
-  @NotBlank(message = "File name cannot be empty")
+  @NotNull(message = "File ID must not be null")
   @Column(nullable = false)
-  private String fileDisplayName;
-
-  @NonNull
-  @NotBlank(message = "Bucket name cannot be empty")
-  @Column(nullable = false)
-  private String bucketName;
-
-  @NonNull
-  @NotBlank(message = "Object name cannot be empty")
-  @Column(nullable = false)
-  private String objectName;
-
-  @NonNull
-  @NotNull(message = "File size cannot be empty")
-  @Column(nullable = false)
-  private Long fileSize;
-
-  @NonNull
-  @NotNull(message = "File status cannot be empty")
-  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED'))")
-  @Enumerated(EnumType.STRING)
-  private FileStatusEnum fileStatus;
+  private UUID fileId;
 
   @Column(nullable = true)
-  private Integer totalChunks;
+  private UUID chunkId;
+
+  @Column(nullable = true)
+  private Integer chunkIndex;
 
   @NonNull
-  @NotBlank(message = "Content type cannot be empty")
+  @NotNull(message = "Event type must not be null")
+  @Enumerated(EnumType.STRING)
   @Column(nullable = false)
-  private String contentType;
+  private PipelineEventEnum eventType;
+
+  @NonNull
+  @NotBlank(message = "Message must not be null or blank")
+  @Column(nullable = false)
+  private String message;
+
+  @JdbcTypeCode(SqlTypes.JSON)
+  @Column(nullable = false, columnDefinition = "jsonb")
+  private String metadata;
 
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;

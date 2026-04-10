@@ -5,11 +5,15 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.dto.PipelineEventDTO;
+
+import lombok.RequiredArgsConstructor;
 
 @Service
+@RequiredArgsConstructor
 public class KafkaProducerService {
 
-  private final KafkaTemplate<String, FileIngestionEventDTO> kafkaTemplate;
+  private final KafkaTemplate<String, Object> kafkaTemplate;
 
   @Value("${app.kafka.topic.file-ingested.media}")
   private String mediaTopic;
@@ -17,14 +21,17 @@ public class KafkaProducerService {
   @Value("${app.kafka.topic.file-ingested.document}")
   private String documentTopic;
 
-  public KafkaProducerService(KafkaTemplate<String, FileIngestionEventDTO> kafkaTemplate) {
-    this.kafkaTemplate = kafkaTemplate;
-  }
+  @Value("${app.kafka.topic.pipeline-events}")
+  private String pipelineEventsTopic;
 
   public void sendFileIngestedEvent(FileIngestionEventDTO event) {
     String topic = determineTopic(event.getContentType());
 
     kafkaTemplate.send(topic, event.getFileId().toString(), event);
+  }
+
+  public void sendPipelineEvent(PipelineEventDTO event) {
+    kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(), event);
   }
 
   private String determineTopic(String contentType) {

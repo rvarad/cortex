@@ -3,6 +3,7 @@ package com.cortex.cortex_ingestion.controller;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.cortex.cortex_ingestion.dto.FileResponseDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLRequestDTO;
@@ -19,6 +21,7 @@ import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.dto.UpdateFileRequestDTO;
 import com.cortex.cortex_ingestion.service.FilesService;
 import com.cortex.cortex_ingestion.service.GcsStorageService;
+import com.cortex.cortex_ingestion.service.PipelineEventsService;
 
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -32,9 +35,13 @@ public class FilesController {
 
   private final FilesService filesService;
 
-  public FilesController(GcsStorageService gcsStorageService, FilesService filesService) {
+  private final PipelineEventsService pipelineEventsService;
+
+  public FilesController(GcsStorageService gcsStorageService, FilesService filesService,
+      PipelineEventsService pipelineEventsService) {
     this.gcsStorageService = gcsStorageService;
     this.filesService = filesService;
+    this.pipelineEventsService = pipelineEventsService;
   }
 
   @PostMapping("/upload")
@@ -71,4 +78,11 @@ public class FilesController {
     filesService.updateFileDisplayName(fileId, request.displayName());
     return ResponseEntity.noContent().build();
   }
+
+  @GetMapping(value = "/{fileId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter getPipelineEvents(@PathVariable UUID fileId) {
+    log.info("Received request for pipeline events for fileId: {}", fileId);
+    return pipelineEventsService.subscribeToEvents(fileId);
+  }
+
 }

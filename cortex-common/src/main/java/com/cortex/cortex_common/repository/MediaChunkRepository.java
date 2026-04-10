@@ -46,4 +46,8 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
             @Param("maxResults") int maxResults);
 
     void deleteAllByFileId(UUID fileId);
+
+    long countByFileId(UUID fileId);
+
+    long countByFileIdAndStatus(UUID fileId, MediaChunk.Status status);
 }

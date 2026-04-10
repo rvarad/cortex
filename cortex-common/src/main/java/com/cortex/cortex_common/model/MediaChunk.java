@@ -27,7 +27,7 @@ import lombok.NoArgsConstructor;
 public class MediaChunk {
 
   public enum Status {
-    CHUNKED,
+    UPLOADED,
     IN_PROGRESS,
     COMPLETED,
     FAILED

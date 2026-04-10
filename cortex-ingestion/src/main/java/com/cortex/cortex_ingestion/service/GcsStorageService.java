@@ -13,8 +13,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.model.FileMetadata;
-import com.cortex.cortex_common.model.FileStatus;
+import com.cortex.cortex_common.model.FileStatusEnum;
+import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.google.api.gax.paging.Page;
@@ -69,7 +71,7 @@ public class GcsStorageService {
 
       FileMetadata fileMetadata = fileMetadataRepository
           .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
-              .bucketName(bucketName).fileStatus(FileStatus.PENDING).contentType(contentType).build());
+              .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).build());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
@@ -96,7 +98,7 @@ public class GcsStorageService {
         fileMetadata.setFileSize(size);
       }
 
-      fileMetadata.setFileStatus(FileStatus.UPLOADED);
+      fileMetadata.setFileStatus(FileStatusEnum.UPLOADED);
       fileMetadataRepository.save(fileMetadata);
       log.info("[GCSService] Updated file metadata: {}", fileMetadata);
 
@@ -104,7 +106,17 @@ public class GcsStorageService {
           .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(fileMetadata.getFileSize())
           .fileStatus(fileMetadata.getFileStatus().toString()).build();
 
+      PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
+          .eventType(PipelineEventEnum.PIPELINE_STARTED).message("File uploaded successfully").metadata(Map.of(
+              "contentType", fileMetadata.getContentType(),
+              "fileSize", fileMetadata.getFileSize(),
+              "objectName", fileMetadata.getObjectName(),
+              "bucketName", fileMetadata.getBucketName(),
+              "fileStatus", fileMetadata.getFileStatus().toString()))
+          .build();
+
       kafkaProducerService.sendFileIngestedEvent(event);
+      kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
       log.info("[GCSService] Sent file upload success event: {}", event);
 
     } catch (Exception e) {
