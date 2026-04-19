@@ -4,8 +4,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.cortex.cortex_common.dto.PipelineEventDTO;
@@ -39,8 +41,11 @@ public class PipelineEventsService {
 
   private final ObjectMapper objectMapper;
 
-  public SseEmitter subscribeToEvents(UUID fileId) {
+  public SseEmitter subscribeToEvents(UUID fileId, String userId) {
     log.info("[PipelineEventsService] Client subscribed to events for fileId: {}", fileId);
+
+    fileMetadataRepository.findByIdAndUserId(fileId, userId)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
     SseEmitter emitter = new SseEmitter(0L);
     sseEmitterRegistry.addEmitter(fileId, emitter);

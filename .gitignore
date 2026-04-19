@@ -16,6 +16,7 @@ Thumbs.db
 .env.local
 **/credentials.json
 **/application-dev.properties
+**/application-dev.yaml
 **/*.jks
 **/*.p12
 **/*.pem

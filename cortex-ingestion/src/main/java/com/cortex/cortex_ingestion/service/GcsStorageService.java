@@ -44,7 +44,8 @@ public class GcsStorageService {
   private String bucketName;
 
   @Transactional
-  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, Long fileSize) {
+  public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, Long fileSize,
+      String userId) {
     String extension = "";
     if (originalFileName != null && originalFileName.contains(".")) {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
@@ -71,7 +72,8 @@ public class GcsStorageService {
 
       FileMetadata fileMetadata = fileMetadataRepository
           .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
-              .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).build());
+              .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).userId(userId)
+              .build());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
@@ -104,7 +106,7 @@ public class GcsStorageService {
 
       FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(fileMetadata.getId())
           .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(fileMetadata.getFileSize())
-          .fileStatus(fileMetadata.getFileStatus().toString()).build();
+          .fileStatus(fileMetadata.getFileStatus().toString()).userId(fileMetadata.getUserId()).build();
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
           .eventType(PipelineEventEnum.PIPELINE_STARTED).message("File uploaded successfully").metadata(Map.of(

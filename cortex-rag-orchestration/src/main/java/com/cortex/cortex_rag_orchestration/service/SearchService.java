@@ -48,17 +48,19 @@ public class SearchService {
     this.fileMetadataRepository = fileMetadataRepository;
   }
 
-  public List<SearchResultDTO> search(SearchRequestDTO request) {
+  public List<SearchResultDTO> search(SearchRequestDTO request, String userId) {
 
     float[] queryVector = embeddingModel.embed(request.getQuery());
 
     String languageCode = request.getLanguageCode() != null ? request.getLanguageCode() : "en";
 
     CompletableFuture<List<UUID>> semanticSearchFuture = CompletableFuture.supplyAsync(
-        () -> mediaChunkRepository.semanticSearch(queryVector, request.getFileId(), CANDIDATE_LIMIT), executorService);
+        () -> mediaChunkRepository.semanticSearch(userId, queryVector, request.getFileId(), CANDIDATE_LIMIT),
+        executorService);
 
     CompletableFuture<List<UUID>> lexicalSearchFuture = CompletableFuture.supplyAsync(() -> mediaChunkRepository
-        .lexicalSearch(request.getQuery(), languageCode, request.getFileId(), CANDIDATE_LIMIT), executorService);
+        .lexicalSearch(userId, request.getQuery(), languageCode, request.getFileId(), CANDIDATE_LIMIT),
+        executorService);
 
     CompletableFuture.allOf(semanticSearchFuture, lexicalSearchFuture).join();
 

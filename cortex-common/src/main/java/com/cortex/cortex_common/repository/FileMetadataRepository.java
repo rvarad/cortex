@@ -1,5 +1,6 @@
 package com.cortex.cortex_common.repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,4 +21,8 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("SELECT fm FROM FileMetadata AS fm WHERE fm.id = :fileId")
   Optional<FileMetadata> findByIdForUpdate(@Param("fileId") UUID fileId);
+
+  List<FileMetadata> findAllByUserId(String userId);
+
+  Optional<FileMetadata> findByIdAndUserId(UUID fileId, String userId);
 }

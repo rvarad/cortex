@@ -10,19 +10,47 @@ services:
       - "5432:5432"
     restart: always
 
-  cortex-ingestion:
+  redis:
+    image: redis:8-alpine
+    container_name: redis
+    restart: always
+
+  cortex-gateway:
     build:
       context: .
-      dockerfile: cortex-ingestion/Dockerfile
-    container_name: cortex-ingestion
+      dockerfile: cortex-gateway/Dockerfile
+    container_name: cortex-gateway
     restart: always
     ports:
       - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
+      - APP_CORS_ALLOWED_ORIGINS=https://your-production-domain.com
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+    depends_on:
+      - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cortex-ingestion:
+    build:
+      context: .
+      dockerfile: cortex-ingestion/Dockerfile
+    container_name: cortex-ingestion
+    # Removed public port 8080 - now accessible only via Gateway
+    environment:
+      - SPRING_PROFILES_ACTIVE=prod
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database (Connects to proxy)
       - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
       - DB_USERNAME=postgres
@@ -51,13 +79,14 @@ services:
       dockerfile: cortex-media-processing-service/Dockerfile
     container_name: cortex-media-processing-service
     restart: always
-    ports:
-      - "8082:8082"
+    # ports:
+    #   - "8082:8082"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
       - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
       - DB_USERNAME=postgres
@@ -90,14 +119,14 @@ services:
       dockerfile: cortex-rag-orchestration/Dockerfile
     container_name: cortex-rag-orchestration
     restart: always
-    ports:
-      - "8083:8083"
+    # Removed public port 8083 - now accessible only via Gateway
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCP_LOCATION=${GCP_LOCATION}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
       - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
       - DB_USERNAME=postgres

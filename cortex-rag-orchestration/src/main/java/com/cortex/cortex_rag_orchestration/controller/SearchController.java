@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.List;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
@@ -25,9 +26,11 @@ public class SearchController {
   private final SearchService searchService;
 
   @PostMapping
-  public ResponseEntity<List<SearchResultDTO>> search(@RequestBody SearchRequestDTO request) {
+  public ResponseEntity<List<SearchResultDTO>> search(@RequestBody SearchRequestDTO request,
+      Authentication authentication) {
 
-    List<SearchResultDTO> results = searchService.search(request);
+    String userId = authentication.getName();
+    List<SearchResultDTO> results = searchService.search(request, userId);
 
     return ResponseEntity.ok(results);
   }

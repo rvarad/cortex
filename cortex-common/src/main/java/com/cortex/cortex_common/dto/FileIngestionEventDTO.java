@@ -18,5 +18,6 @@ public class FileIngestionEventDTO {
   private String contentType;
   private Long fileSize;
   private String fileStatus;
+  private String userId;
 
 }

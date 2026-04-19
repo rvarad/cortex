@@ -17,6 +17,9 @@ SECRET_GEMINI_KEY="cortex-gemini-api-key"
 SECRET_KAFKA_CA="aiven-kafka-ca-cert"
 SECRET_KAFKA_CERT="aiven-kafka-service-cert"
 SECRET_KAFKA_KEY="aiven-kafka-service-key"
+SECRET_GOOGLE_CLIENT_ID="cortex-google-oauth2-client-id"
+SECRET_GOOGLE_CLIENT_SECRET="cortex-google-oauth2-client-secret"
+SECRET_INTERNAL_JWT="cortex-internal-jwt-secret"
 
 # Helper to fetch secret
 fetch_secret() {
@@ -71,6 +74,11 @@ KAFKA_BOOTSTRAP_SERVERS=$(fetch_secret "$SECRET_KAFKA_URL")
 # AI Keys
 GROQ_API_KEY=$(fetch_secret "$SECRET_GROQ_KEY")
 GEMINI_API_KEY=$(fetch_secret "$SECRET_GEMINI_KEY")
+
+# Gateway & Security
+GOOGLE_CLIENT_ID=$(fetch_secret "$SECRET_GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET=$(fetch_secret "$SECRET_GOOGLE_CLIENT_SECRET")
+INTERNAL_JWT_SECRET=$(fetch_secret "$SECRET_INTERNAL_JWT")
 
 # Kafka SSL (paths inside Docker containers)
 KAFKA_SSL_TRUSTSTORE_LOCATION=/etc/kafka/secrets/truststore.jks

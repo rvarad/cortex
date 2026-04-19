@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: cortex-gateway
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          routes:
+            - id: files
+              uri: http://${INGESTION_HOST:localhost}:8081
+              predicates:
+                - Path=/files/**
+
+            - id: webhook
+              uri: http://${INGESTION_HOST:localhost}:8081
+              predicates:
+                - Path=/api/webhook/**
+
+            - id: search
+              uri: http://${RAG_HOST:localhost}:8083
+              predicates:
+                - Path=/api/v1/search/**
+
+server:
+  port: 8080

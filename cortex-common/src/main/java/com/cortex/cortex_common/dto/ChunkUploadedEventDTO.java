@@ -21,4 +21,5 @@ public class ChunkUploadedEventDTO {
   private double end_s;
   private String videoPath;
   private String audioPath;
+  private String userId;
 }

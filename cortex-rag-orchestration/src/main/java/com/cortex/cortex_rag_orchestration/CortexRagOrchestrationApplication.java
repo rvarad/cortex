@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = { "com.cortex.cortex_rag_orchestration", "com.cortex.cortex_common" })
 @EntityScan(basePackages = { "com.cortex.cortex_common.model", "com.cortex.cortex_rag_orchestration" })
 @EnableJpaRepositories(basePackages = { "com.cortex.cortex_rag_orchestration.repository", "com.cortex.cortex_common.repository" })
 public class CortexRagOrchestrationApplication {

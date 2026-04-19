@@ -13,6 +13,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -57,6 +58,10 @@ public class MediaChunk {
 
   @Column(columnDefinition = "TEXT")
   private String visualSummary;
+
+  @NotNull(message = "User ID cannot be empty")
+  @Column(nullable = false, updatable = false)
+  private String userId;
 
   @JdbcTypeCode(SqlTypes.VECTOR)
   @Column(columnDefinition = "vector(768)")

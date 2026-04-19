@@ -13,6 +13,14 @@ services:
     networks:
       - cortex-net
 
+  redis:
+    image: redis:8-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - cortex-net
+
   kafka:
     image: apache/kafka:latest
     container_name: kafka-server
@@ -59,13 +67,34 @@ services:
     depends_on:
       - postgres
 
+  cortex-gateway:
+    build:
+      context: .
+      dockerfile: cortex-gateway/Dockerfile
+    container_name: cortex-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - REDIS_HOST=redis
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
+      - INGESTION_HOST=cortex-ingestion
+      - RAG_HOST=cortex-rag-orchestration
+      - CORS_ALLOWED_ORIGIN=http://localhost:3000
+      - SPRING_PROFILES_ACTIVE=dev
+    depends_on:
+      - redis
+    networks:
+      - cortex-net
+
   cortex-ingestion:
     build:
       context: .
       dockerfile: cortex-ingestion/Dockerfile
     container_name: cortex-ingestion
-    ports:
-      - "8080:8080"
+    # ports:
+    #   - "8080:8080"
     environment:
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
@@ -73,6 +102,7 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
@@ -87,8 +117,8 @@ services:
       context: .
       dockerfile: cortex-media-processing-service/Dockerfile
     container_name: cortex-media-processing-service
-    ports:
-      - "8082:8082"
+    # ports:
+    #   - "8082:8082"
     environment:
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka-server:29092
@@ -119,6 +149,7 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro

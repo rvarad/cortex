@@ -70,6 +70,10 @@ public class FileMetadata {
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
 
+  @NotNull(message = "User ID cannot be empty")
+  @Column(nullable = false, updatable = false)
+  private String userId;
+
   @PrePersist
   protected void onCreate() {
     this.createdAt = LocalDateTime.now();

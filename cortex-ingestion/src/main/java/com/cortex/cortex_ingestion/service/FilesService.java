@@ -28,13 +28,14 @@ public class FilesService {
 
   private final GcsStorageService gcsStorageService;
 
-  public List<FileResponseDTO> getAllFiles() {
+  public List<FileResponseDTO> getAllFiles(String userId) {
     try {
-      List<FileResponseDTO> fileMetadataList = fileMetadataRepository.findAll().stream().map((FileMetadata file) -> {
-        return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
-            .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
-            .build();
-      }).collect(Collectors.toList());
+      List<FileResponseDTO> fileMetadataList = fileMetadataRepository.findAllByUserId(userId).stream()
+          .map((FileMetadata file) -> {
+            return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
+                .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
+                .build();
+          }).collect(Collectors.toList());
 
       return fileMetadataList;
     } catch (Exception e) {
@@ -44,9 +45,9 @@ public class FilesService {
   }
 
   @Transactional
-  public void deleteFile(UUID fileId) {
+  public void deleteFile(UUID fileId, String userId) {
     try {
-      FileMetadata metadata = fileMetadataRepository.findById(fileId).orElseThrow(() -> {
+      FileMetadata metadata = fileMetadataRepository.findByIdAndUserId(fileId, userId).orElseThrow(() -> {
         log.error("[FileService] File Metadata not found for fileId: {}", fileId);
         throw new RuntimeException("File not found for fileId: " + fileId);
       });
@@ -79,9 +80,9 @@ public class FilesService {
   }
 
   @Transactional
-  public void updateFileDisplayName(UUID fileId, String newDisplayName) {
+  public void updateFileDisplayName(UUID fileId, String newDisplayName, String userId) {
     try {
-      FileMetadata file = fileMetadataRepository.findById(fileId)
+      FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
           .orElseThrow(() -> new RuntimeException("File not found for fileId: " + fileId));
 
       file.setFileDisplayName(newDisplayName);

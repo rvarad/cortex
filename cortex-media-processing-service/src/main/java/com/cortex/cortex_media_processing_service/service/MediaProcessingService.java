@@ -106,7 +106,7 @@ public class MediaProcessingService {
     }
   }
 
-  public void processMedia(String objectName, UUID fileId) {
+  public void processMedia(String objectName, UUID fileId, String userId) {
     log.info("Beginning chunking for file: {}", objectName);
 
     isRunning.set(true);
@@ -131,7 +131,7 @@ public class MediaProcessingService {
       String audioPattern = workDir.resolve("audio_chunk_%03d.wav").toString();
 
       Thread.startVirtualThread(() -> startDirectoryWatcher(workDir));
-      Thread.startVirtualThread(() -> startUploadDispatcher(objectName, fileId, manifestDTO));
+      Thread.startVirtualThread(() -> startUploadDispatcher(objectName, fileId, manifestDTO, userId));
 
       lastChunkTimeMS.set(System.currentTimeMillis());
 
@@ -384,7 +384,7 @@ public class MediaProcessingService {
     }
   }
 
-  private void startUploadDispatcher(String objectName, UUID fileId, MediaFileManifestDTO manifestDTO) {
+  private void startUploadDispatcher(String objectName, UUID fileId, MediaFileManifestDTO manifestDTO, String userId) {
     while (isRunning.get() || !uploadQueue.isEmpty()) {
       try {
         Path chunkPath = uploadQueue.poll(1, TimeUnit.SECONDS);
@@ -397,7 +397,7 @@ public class MediaProcessingService {
 
         Thread.startVirtualThread(() -> {
           chunkRegistry.put(chunkPath.toString(), UploadStatus.IN_PROGRESS);
-          uploadWorker(objectName, fileId, chunkPath, manifestDTO);
+          uploadWorker(objectName, fileId, chunkPath, manifestDTO, userId);
         });
       } catch (Exception e) {
         Thread.currentThread().interrupt();
@@ -406,7 +406,8 @@ public class MediaProcessingService {
     }
   }
 
-  private void uploadWorker(String objectName, UUID fileId, Path chunkPath, MediaFileManifestDTO manifestDTO) {
+  private void uploadWorker(String objectName, UUID fileId, Path chunkPath, MediaFileManifestDTO manifestDTO,
+      String userId) {
     try {
       String fileName = chunkPath.getFileName().toString();
       int index = extractChunkNumber(fileName);
@@ -447,7 +448,7 @@ public class MediaProcessingService {
 
         MediaChunk chunk = mediaChunkRepository.save(MediaChunk.builder().fileId(fileId)
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
-            .status(MediaChunk.Status.UPLOADED).build());
+            .status(MediaChunk.Status.UPLOADED).userId(userId).build());
 
         kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
@@ -457,7 +458,7 @@ public class MediaProcessingService {
         kafkaTemplate.send("media-chunk-uploaded",
             ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).fileId(fileId).objectName(objectName)
                 .chunkIndex(index).start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s())
-                .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath()).build());
+                .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath()).userId(userId).build());
 
         totalChunks.incrementAndGet();
 

@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -46,25 +47,31 @@ public class FilesController {
 
   @PostMapping("/upload")
   public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
-      @RequestBody GetPresignedURLRequestDTO requestBody) {
+      @RequestBody GetPresignedURLRequestDTO requestBody, Authentication authentication) {
     log.info("Received request for presigned url for file: {}", requestBody);
+
+    String userId = authentication.getName();
     GetPresignedURLResponseDTO uploadUrl = gcsStorageService.getPresignedURL(requestBody.getFilename(),
-        requestBody.getContentType(), requestBody.getFileSize());
+        requestBody.getContentType(), requestBody.getFileSize(), userId);
 
     return ResponseEntity.ok(uploadUrl);
   }
 
   @GetMapping
-  public ResponseEntity<List<FileResponseDTO>> getAllFiles() {
-    List<FileResponseDTO> response = filesService.getAllFiles();
+  public ResponseEntity<List<FileResponseDTO>> getAllFiles(Authentication authentication) {
+
+    String userId = authentication.getName();
+    List<FileResponseDTO> response = filesService.getAllFiles(userId);
 
     return ResponseEntity.ok(response);
   }
 
   @DeleteMapping("/{fileId}")
-  public ResponseEntity<Void> deleteFile(@PathVariable UUID fileId) {
+  public ResponseEntity<Void> deleteFile(@PathVariable UUID fileId, Authentication authentication) {
     log.info("Received request to delete file: {}", fileId);
-    filesService.deleteFile(fileId);
+
+    String userId = authentication.getName();
+    filesService.deleteFile(fileId, userId);
 
     return ResponseEntity.noContent().build();
   }
@@ -72,17 +79,21 @@ public class FilesController {
   @PatchMapping("update/{fileId}")
   public ResponseEntity<Void> updateFile(
       @PathVariable UUID fileId,
-      @Valid @RequestBody UpdateFileRequestDTO request) {
+      @Valid @RequestBody UpdateFileRequestDTO request, Authentication authentication) {
 
     log.info("Received request to update file display name for fileId: {} to '{}'", fileId, request.displayName());
-    filesService.updateFileDisplayName(fileId, request.displayName());
+
+    String userId = authentication.getName();
+    filesService.updateFileDisplayName(fileId, request.displayName(), userId);
     return ResponseEntity.noContent().build();
   }
 
   @GetMapping(value = "/{fileId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-  public SseEmitter getPipelineEvents(@PathVariable UUID fileId) {
+  public SseEmitter getPipelineEvents(@PathVariable UUID fileId, Authentication authentication) {
     log.info("Received request for pipeline events for fileId: {}", fileId);
-    return pipelineEventsService.subscribeToEvents(fileId);
+
+    String userId = authentication.getName();
+    return pipelineEventsService.subscribeToEvents(fileId, userId);
   }
 
 }
