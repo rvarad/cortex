@@ -20,7 +20,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-@Component
+
 public class InternalJwtFilter extends OncePerRequestFilter {
 
   @Value("${app.jwt.secret}")
@@ -62,6 +62,6 @@ public class InternalJwtFilter extends OncePerRequestFilter {
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
     String path = request.getRequestURI();
-    return path.startsWith("/api/webhook") || path.startsWith("/actuator");
+    return path.startsWith("/api/webhook") || path.startsWith("/actuator") || path.equals("/error");
   }
 }

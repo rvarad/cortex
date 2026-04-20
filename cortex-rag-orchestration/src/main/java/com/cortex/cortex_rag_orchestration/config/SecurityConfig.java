@@ -1,5 +1,6 @@
 package com.cortex.cortex_rag_orchestration.config;
 
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -13,6 +14,17 @@ import com.cortex.cortex_common.security.InternalJwtFilter;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+  @Bean
+  public InternalJwtFilter jwtFilter() {
+    return new InternalJwtFilter();
+  }
+
+  @Bean
+  public FilterRegistrationBean<InternalJwtFilter> jwtFilterRegistration(InternalJwtFilter filter) {
+    FilterRegistrationBean<InternalJwtFilter> registration = new FilterRegistrationBean<>(filter);
+    registration.setEnabled(false);
+    return registration;
+  }
   @Bean
   public SecurityFilterChain filterChain(HttpSecurity httpSecurity, InternalJwtFilter jwtFilter) throws Exception {
     return httpSecurity
