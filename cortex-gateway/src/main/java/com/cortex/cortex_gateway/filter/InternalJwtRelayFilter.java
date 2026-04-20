@@ -81,4 +81,14 @@ public class InternalJwtRelayFilter extends OncePerRequestFilter {
         || path.startsWith("/oauth2")
         || path.startsWith("/login");
   }
+
+  @Override
+  protected boolean shouldNotFilterAsyncDispatch() {
+    return false;
+  }
+
+  @Override
+  protected boolean shouldNotFilterErrorDispatch() {
+    return false;
+  }
 }

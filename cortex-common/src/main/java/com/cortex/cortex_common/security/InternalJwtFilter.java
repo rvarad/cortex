@@ -64,4 +64,14 @@ public class InternalJwtFilter extends OncePerRequestFilter {
     String path = request.getRequestURI();
     return path.startsWith("/api/webhook") || path.startsWith("/actuator") || path.equals("/error");
   }
+
+  @Override
+  protected boolean shouldNotFilterAsyncDispatch() {
+    return false;
+  }
+
+  @Override
+  protected boolean shouldNotFilterErrorDispatch() {
+    return false;
+  }
 }
