@@ -22,6 +22,6 @@ spring:
 app:
   jwt:
     secret: ${INTERNAL_JWT_SECRET}
-    expiration: 3600000 # 1 hour
+    expiration-seconds: 3600000 # 1 hour
   cors:
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000}
