@@ -12,4 +12,6 @@ import com.cortex.cortex_ingestion.model.PipelineEvent;
 public interface PipelineEventRepository extends JpaRepository<PipelineEvent, UUID> {
 
   List<PipelineEvent> findByFileIdOrderByCreatedAtAsc(UUID fileId);
+
+  void deleteAllByFileId(UUID fileId);
 }

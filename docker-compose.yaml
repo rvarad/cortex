@@ -75,10 +75,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      # - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      # - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - REDIS_HOST=redis
-      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
+      # - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - INGESTION_HOST=cortex-ingestion
       - RAG_HOST=cortex-rag-orchestration
       - CORS_ALLOWED_ORIGIN=http://localhost:3000
@@ -102,7 +102,6 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
-      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
@@ -149,13 +148,26 @@ services:
       - GCS_BUCKET_NAME=cortex-dev-bucket
       - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
-      - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - SPRING_PROFILES_ACTIVE=dev
     volumes:
       - ../project-5895ee34-7879-444a-997-465a503eabf0.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres
       - kafka
+    networks:
+      - cortex-net
+
+  cortex-frontend:
+    build:
+      context: ./cortex-frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8080
+    container_name: cortex-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - cortex-gateway
     networks:
       - cortex-net
 
