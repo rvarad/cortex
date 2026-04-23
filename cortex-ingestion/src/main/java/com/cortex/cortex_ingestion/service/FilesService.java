@@ -1,5 +1,6 @@
 package com.cortex.cortex_ingestion.service;
 
+import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -22,6 +23,8 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class FilesService {
 
+  private final PipelineEventRepository pipelineEventRepository;
+
   private final MediaChunkRepository mediaChunkRepository;
 
   private final FileMetadataRepository fileMetadataRepository;
@@ -34,6 +37,7 @@ public class FilesService {
           .map((FileMetadata file) -> {
             return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
                 .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
+                .fileStatus(file.getFileStatus().name())
                 .build();
           }).collect(Collectors.toList());
 
@@ -56,6 +60,7 @@ public class FilesService {
 
       mediaChunkRepository.deleteAllByFileId(fileId);
       fileMetadataRepository.delete(metadata);
+      pipelineEventRepository.deleteAllByFileId(fileId);
 
       log.info("[FilesService] DB records for fileId: {} queued for deletion", fileId);
 

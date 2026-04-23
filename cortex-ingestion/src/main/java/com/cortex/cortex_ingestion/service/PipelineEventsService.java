@@ -44,13 +44,19 @@ public class PipelineEventsService {
   public SseEmitter subscribeToEvents(UUID fileId, String userId) {
     log.info("[PipelineEventsService] Client subscribed to events for fileId: {}", fileId);
 
-    fileMetadataRepository.findByIdAndUserId(fileId, userId)
+    FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
     SseEmitter emitter = new SseEmitter(0L);
-    sseEmitterRegistry.addEmitter(fileId, emitter);
 
     sendPreviousEvents(fileId, emitter);
+
+    if (file.getFileStatus() == FileStatusEnum.COMPLETED) {
+      log.info("[PipelineEventsService] File is already completed. Closing emitter for fileId: {}", fileId);
+      emitter.complete();
+    } else {
+      sseEmitterRegistry.addEmitter(fileId, emitter);
+    }
 
     return emitter;
   }

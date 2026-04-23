@@ -17,4 +17,5 @@ public class FileResponseDTO {
   private String objectName;
   private String contentType;
   private Long fileSize;
+  private String fileStatus;
 }

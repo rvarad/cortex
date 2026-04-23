@@ -1,0 +1,14 @@
+[
+  {
+    "origin": ["http://localhost:3000", "http://34.14.177.79.nip.io"],
+    "method": ["GET", "PUT", "POST", "DELETE", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "Access-Control-Allow-Origin",
+      "Access-Control-Allow-Methods",
+      "Access-Control-Allow-Headers",
+      "x-goog-resumable"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -16,6 +16,13 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @EnableWebSecurity
 public class SecurityConfig {
 
+  // static {
+  // // Ensure security context is propagated to async threads (needed for SSE
+  // relay)
+  // org.springframework.security.core.context.SecurityContextHolder.setStrategyName(
+  // org.springframework.security.core.context.SecurityContextHolder.MODE_INHERITABLETHREADLOCAL);
+  // }
+
   @Value("${app.cors.allowed-origins}")
   private String allowedOrigins;
 
