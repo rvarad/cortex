@@ -7,6 +7,8 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -102,7 +104,11 @@ public class PipelineEventsService {
 
       pipelineEventRepository.save(event);
 
-      sseEmitterRegistry.broadcast(eventDTO);
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        public void afterCommit() {
+          sseEmitterRegistry.broadcast(eventDTO);
+        }
+      });
 
       if (eventDTO.getEventType() == PipelineEventEnum.CHUNKING_COMPLETE
           || eventDTO.getEventType() == PipelineEventEnum.EMBEDDING_COMPLETE) {
@@ -162,8 +168,12 @@ public class PipelineEventsService {
           .build();
       pipelineEventRepository.save(entity);
 
-      sseEmitterRegistry.broadcast(completedEventDTO);
-      sseEmitterRegistry.completeEmitters(fileId);
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        public void afterCommit() {
+          sseEmitterRegistry.broadcast(completedEventDTO);
+          sseEmitterRegistry.completeEmitters(fileId);
+        }
+      });
     }
   }
 
