@@ -1,4 +1,6 @@
 spring:
+  application:
+    name: cortex-gateway
   security:
     oauth2:
       client:
@@ -17,7 +19,11 @@ spring:
     store-type: redis
     timeout: 24h
     redis:
-      namespace: cortex:session
+      namespace: cortex:sessions # Match dev config
+  
+server:
+  forward-headers-strategy: native
+  port: 8080
 
 app:
   jwt:

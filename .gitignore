@@ -22,6 +22,8 @@ Thumbs.db
 **/*.pem
 **/*.key
 certs/
+swag_config/
+swag_data/
 
 # IDE files
 .idea/
