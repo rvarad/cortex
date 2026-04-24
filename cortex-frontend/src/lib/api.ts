@@ -11,7 +11,7 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const url = `${API_URL}${endpoint}`;
+  const url = endpoint.startsWith("http") ? endpoint : `${API_URL}${endpoint}`;
 
   const res = await fetch(url, {
     ...options,
@@ -48,20 +48,24 @@ async function request<T>(
 // ============ Auth ============
 
 export function getLoginUrl(): string {
-  return `${API_URL}/oauth2/authorization/google`;
+  // Use clean URLs (no /api) for browser-based auth flows
+  const rootUrl = API_URL.replace(/\/api$/, "");
+  return `${rootUrl}/oauth2/authorization/google`;
 }
 
 export function getLogoutUrl(): string {
-  return `${API_URL}/auth/logout`;
+  const rootUrl = API_URL.replace(/\/api$/, "");
+  return `${rootUrl}/auth/logout`;
 }
 
 export async function getCurrentUser() {
+  const rootUrl = API_URL.replace(/\/api$/, "");
   return request<{
     userId: string;
     email: string;
     name: string;
     picture: string;
-  }>("/auth/me");
+  }>(`${rootUrl}/auth/me`);
 }
 
 // ============ Files ============
