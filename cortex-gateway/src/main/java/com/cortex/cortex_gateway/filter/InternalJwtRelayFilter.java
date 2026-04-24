@@ -75,7 +75,8 @@ public class InternalJwtRelayFilter extends OncePerRequestFilter {
   protected boolean shouldNotFilter(HttpServletRequest request) {
     String path = request.getRequestURI();
 
-    return path.startsWith("/api/webhook")
+    return path.startsWith("/api/v1/webhook")
+        || path.startsWith("/api/webhook")
         || path.startsWith("/auth")
         || path.startsWith("/actuator")
         || path.startsWith("/oauth2")

@@ -60,7 +60,7 @@ public class InternalJwtFilter extends OncePerRequestFilter {
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
     String path = request.getRequestURI();
-    return path.startsWith("/api/webhook") || path.startsWith("/actuator") || path.equals("/error");
+    return path.startsWith("/api/v1/webhook") || path.startsWith("/api/webhook") || path.startsWith("/actuator") || path.equals("/error");
   }
 
   @Override
