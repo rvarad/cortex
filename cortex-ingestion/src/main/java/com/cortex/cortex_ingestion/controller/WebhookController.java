@@ -48,8 +48,25 @@ public class WebhookController {
     log.info(" - Size: {} bytes", size);
     log.info(" - Payload: " + eventPayload);
 
-    // Support both CloudEvents (ce-subject) and Pub/Sub GCS notifications (body.name)
+    // 1. Support CloudEvents (ce-subject header)
     String finalObjectName = objectName;
+
+    // 2. Support Pub/Sub Push Envelope (message.attributes.objectId)
+    if (finalObjectName == null || finalObjectName.isEmpty()) {
+      if (eventPayload != null && eventPayload.containsKey("message")) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> message = (Map<String, Object>) eventPayload.get("message");
+        if (message != null && message.containsKey("attributes")) {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> attributes = (Map<String, Object>) message.get("attributes");
+          if (attributes != null && attributes.containsKey("objectId")) {
+            finalObjectName = attributes.get("objectId").toString();
+          }
+        }
+      }
+    }
+
+    // 3. Fallback: Direct JSON body (just in case)
     if (finalObjectName == null || finalObjectName.isEmpty()) {
       if (eventPayload != null && eventPayload.containsKey("name")) {
         finalObjectName = eventPayload.get("name").toString();
