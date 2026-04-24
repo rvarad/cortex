@@ -48,9 +48,20 @@ public class WebhookController {
     log.info(" - Size: {} bytes", size);
     log.info(" - Payload: " + eventPayload);
 
-    if (objectName != null && !objectName.isEmpty()) {
-      // The objectName from GCS looks like "objects/uploads/media/uuid.mp4"
-      String normalizedObjectName = objectName.startsWith("objects/") ? objectName.substring(8) : objectName;
+    // Support both CloudEvents (ce-subject) and Pub/Sub GCS notifications (body.name)
+    String finalObjectName = objectName;
+    if (finalObjectName == null || finalObjectName.isEmpty()) {
+      if (eventPayload != null && eventPayload.containsKey("name")) {
+        finalObjectName = eventPayload.get("name").toString();
+      }
+    }
+
+    if (finalObjectName != null && !finalObjectName.isEmpty()) {
+      // The objectName from GCS looks like "uploads/media/uuid.mp4"
+      String normalizedObjectName = finalObjectName;
+      if (normalizedObjectName.startsWith("objects/")) {
+        normalizedObjectName = normalizedObjectName.substring(8);
+      }
 
       // BREAK THE INFINITE LOOP: Only process initial media uploads
       if (!normalizedObjectName.startsWith("uploads/media/")) {
@@ -63,7 +74,7 @@ public class WebhookController {
       return ResponseEntity.ok().build();
     }
 
-    log.error("CloudEvent missing subject (object name). Payload: " + eventPayload);
+    log.error("Notification missing object name. Headers: ce-subject={}, Payload: {}", objectName, eventPayload);
     return ResponseEntity.badRequest().build();
   }
 }
