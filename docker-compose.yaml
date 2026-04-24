@@ -81,7 +81,7 @@ services:
       # - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - INGESTION_HOST=cortex-ingestion
       - RAG_HOST=cortex-rag-orchestration
-      - CORS_ALLOWED_ORIGIN=http://localhost:3000
+      - APP_CORS_ALLOWED_ORIGINS=http://localhost:3000
       - SPRING_PROFILES_ACTIVE=dev
     depends_on:
       - redis

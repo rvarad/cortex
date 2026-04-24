@@ -1,4 +1,25 @@
 services:
+  # Nginx Reverse Proxy + SSL (DuckDNS)
+  swag:
+    image: linuxserver/swag:latest
+    container_name: swag
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+      - URL=${DOMAIN_NAME}
+      - SUBDOMAINS=www,
+      - VALIDATION=http
+    volumes:
+      - ./swag_config:/config
+      - ./nginx/cortex.conf:/config/nginx/site-confs/default.conf:ro
+    ports:
+      - "443:443"
+      - "80:80"
+    restart: always
+
   # Cloud SQL Auth Proxy (Secure DB Connection)
   cloud-sql-proxy:
     image: gcr.io/cloudsql-docker/gce-proxy:1.33.2
@@ -21,8 +42,9 @@ services:
       dockerfile: cortex-gateway/Dockerfile
     container_name: cortex-gateway
     restart: always
-    ports:
-      - "8080:8080"
+    # Public port removed - access only via Nginx (swag)
+    # ports:
+    #   - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
@@ -30,7 +52,7 @@ services:
       - INTERNAL_JWT_SECRET=${INTERNAL_JWT_SECRET}
       - INGESTION_HOST=cortex-ingestion
       - RAG_HOST=cortex-rag-orchestration
-      - APP_CORS_ALLOWED_ORIGINS=http://34.14.177.79.nip.io
+      - APP_CORS_ALLOWED_ORIGINS=https://${DOMAIN_NAME}
       - SPRING_DATA_REDIS_HOST=redis
       - SPRING_DATA_REDIS_PORT=6379
     depends_on:
@@ -160,11 +182,12 @@ services:
       context: ./cortex-frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=http://34.14.177.79.nip.io:8080
+        - NEXT_PUBLIC_API_URL=https://${DOMAIN_NAME}/api
     container_name: cortex-frontend
     restart: always
-    ports:
-      - "80:3000"
+    # Public port removed - access only via Nginx (swag)
+    # ports:
+    #   - "80:3000"
     depends_on:
       - cortex-gateway
     logging:
