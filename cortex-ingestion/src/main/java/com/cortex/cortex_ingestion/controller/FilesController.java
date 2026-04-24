@@ -29,7 +29,7 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @RestController
-@RequestMapping("/files")
+@RequestMapping("/api/v1/files")
 public class FilesController {
 
   private final GcsStorageService gcsStorageService;

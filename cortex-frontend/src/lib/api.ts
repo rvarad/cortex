@@ -1,4 +1,11 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API_VERSION = "/v1";
+
+// API_URL is for data endpoints (e.g., https://domain.com/api/v1)
+const API_URL = `${API_BASE}${API_VERSION}`;
+
+// Helper to get the root domain for clean auth flows (no /api, no /v1)
+const getRootUrl = () => API_BASE.replace(/\/api$/, "");
 
 class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -49,23 +56,20 @@ async function request<T>(
 
 export function getLoginUrl(): string {
   // Use clean URLs (no /api) for browser-based auth flows
-  const rootUrl = API_URL.replace(/\/api$/, "");
-  return `${rootUrl}/oauth2/authorization/google`;
+  return `${getRootUrl()}/oauth2/authorization/google`;
 }
 
 export function getLogoutUrl(): string {
-  const rootUrl = API_URL.replace(/\/api$/, "");
-  return `${rootUrl}/auth/logout`;
+  return `${getRootUrl()}/auth/logout`;
 }
 
 export async function getCurrentUser() {
-  const rootUrl = API_URL.replace(/\/api$/, "");
   return request<{
     userId: string;
     email: string;
     name: string;
     picture: string;
-  }>(`${rootUrl}/auth/me`);
+  }>(`${getRootUrl()}/auth/me`);
 }
 
 // ============ Files ============
@@ -124,7 +128,7 @@ export async function updateFileName(fileId: string, displayName: string) {
 }
 
 export async function deleteFile(fileId: string) {
-  return request<void>(`/files/${fileId}`, {
+  return request<void>(`/${fileId}`, {
     method: "DELETE",
   });
 }
@@ -211,7 +215,7 @@ export async function search(body: {
       languageCode: string;
       score: number;
     }[]
-  >("/api/v1/search", {
+  >("/search", {
     method: "POST",
     body: JSON.stringify(body),
   });
