@@ -15,7 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/webhook")
+@RequestMapping("/api/v1/webhook")
 public class WebhookController {
 
   private final GcsStorageService gcsStorageService;

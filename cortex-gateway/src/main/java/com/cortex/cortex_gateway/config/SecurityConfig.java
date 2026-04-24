@@ -30,7 +30,7 @@ public class SecurityConfig {
   public SecurityFilterChain filterChain(HttpSecurity httpSecurity) throws Exception {
     return httpSecurity
         .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/api/webhook/**").permitAll()
+            .requestMatchers("/api/v1/webhook/**").permitAll()
             .requestMatchers("/actuator/**").permitAll()
             .requestMatchers("/auth/**").permitAll()
             .anyRequest().authenticated())
