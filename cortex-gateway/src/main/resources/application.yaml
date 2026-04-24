@@ -9,12 +9,12 @@ spring:
             - id: files
               uri: http://${INGESTION_HOST:localhost}:8081
               predicates:
-                - Path=/files/**
+                - Path=/api/v1/files/**
 
             - id: webhook
               uri: http://${INGESTION_HOST:localhost}:8081
               predicates:
-                - Path=/api/webhook/**
+                - Path=/api/v1/webhook/**
 
             - id: search
               uri: http://${RAG_HOST:localhost}:8083
