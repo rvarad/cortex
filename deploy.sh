@@ -8,6 +8,7 @@ PROJECT_ID=$(gcloud config get-value project)
 REGION="asia-south1"
 DB_INSTANCE_CONNECTION_NAME="${PROJECT_ID}:${REGION}:cortex-prod-db"
 GCS_BUCKET="cortex-prod-bucket"
+DOMAIN_NAME="cortex-media.in"
 
 # Secret names in Secret Manager
 SECRET_KAFKA_URL="aiven-kafka-bootstrap-servers"
@@ -64,6 +65,7 @@ GCP_PROJECT_ID=${PROJECT_ID}
 GCP_LOCATION=${REGION}
 GCS_BUCKET_NAME=${GCS_BUCKET}
 DB_INSTANCE_CONNECTION_NAME=${DB_INSTANCE_CONNECTION_NAME}
+DOMAIN_NAME=${DOMAIN_NAME}
 
 # Database
 DB_PASSWORD=$(fetch_secret "$SECRET_DB_PASS")
