@@ -8,7 +8,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 @SpringBootApplication
 @EntityScan(basePackages = { "com.cortex.cortex_media_processing_service.model", "com.cortex.cortex_common.model" })
-@EnableJpaRepositories(basePackages = { "com.cortex.cortex_media_processing_service.repository", "com.cortex.cortex_common.repository" })
+@EnableJpaRepositories(basePackages = { "com.cortex.cortex_media_processing_service.repository",
+		"com.cortex.cortex_common.repository" })
 public class CortexMediaProcessingServiceApplication {
 
 	public static void main(String[] args) {
