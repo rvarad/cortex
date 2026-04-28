@@ -16,13 +16,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,8 +35,10 @@ import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
+import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
+import com.cortex.cortex_media_processing_service.service.processing.MediaProcessingContext;
+import com.cortex.cortex_media_processing_service.service.processing.UploadStatus;
 
-import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -49,13 +46,6 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 public class MediaProcessingService {
-
-  private enum UploadStatus {
-    PENDING,
-    IN_PROGRESS,
-    UPLOADED,
-    FAILED
-  }
 
   private final GcsStorageService gcsStorageService;
 
@@ -75,44 +65,14 @@ public class MediaProcessingService {
   private static final int AUDIO_CHUNK_DURATION_S = 60;
   private static final int FFMPEG_PROCESSING_TIMEOUT_M = 30;
 
-  private final AtomicLong lastChunkTimeMS = new AtomicLong(System.currentTimeMillis());
-
-  private final AtomicInteger totalChunks = new AtomicInteger(0);
-
   private static final String TEMP_DIRECTORY = "/tmp/media-processing-service-chunks";
 
-  AtomicBoolean isRunning = new AtomicBoolean(false);
-
-  private final Map<Integer, ChunkPair> chunkPairMap = new ConcurrentHashMap<>();
-
-  private final Map<String, UploadStatus> chunkRegistry = new ConcurrentHashMap<>();
-
-  private final BlockingQueue<Path> uploadQueue = new LinkedBlockingQueue<>();
-
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
-
-  @Data
-  private static class ChunkPair {
-    private String videoPath;
-    private String audioPath;
-    private double start_s;
-    private double end_s;
-
-    public boolean isComplete(MediaFileManifestDTO manifestDTO) {
-      boolean videoSatisfied = !manifestDTO.isHasVideo() || videoPath != null;
-      boolean audioSatisfied = !manifestDTO.isHasAudio() || audioPath != null;
-
-      return videoSatisfied && audioSatisfied;
-    }
-  }
 
   public void processMedia(String objectName, UUID fileId, String userId) {
     log.info("Beginning chunking for file: {}", objectName);
 
-    isRunning.set(true);
-    chunkRegistry.clear();
-    uploadQueue.clear();
-    chunkPairMap.clear();
+    MediaProcessingContext ctx = null;
 
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
@@ -127,15 +87,24 @@ public class MediaProcessingService {
       log.info("Created working directory: {}", workDir.toString());
       log.info("Created working directory: {}", workDir.getFileName().toString());
 
+      ctx = new MediaProcessingContext(
+          fileId,
+          objectName,
+          userId,
+          workDir,
+          manifestDTO);
+
+      MediaProcessingContext processContext = ctx;
+
       String videoPattern = workDir.resolve("video_chunk_%03d.mp4").toString();
       String audioPattern = workDir.resolve("audio_chunk_%03d.wav").toString();
 
-      Thread.startVirtualThread(() -> startDirectoryWatcher(workDir));
-      Thread.startVirtualThread(() -> startUploadDispatcher(objectName, fileId, manifestDTO, userId));
+      Thread.startVirtualThread(() -> startDirectoryWatcher(processContext));
+      Thread.startVirtualThread(() -> startUploadDispatcher(processContext));
 
-      lastChunkTimeMS.set(System.currentTimeMillis());
+      processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
-      totalChunks.set(0);
+      processContext.getTotalChunks().set(0);
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
@@ -145,7 +114,7 @@ public class MediaProcessingService {
 
       Thread.startVirtualThread(() -> monitorFFmpegOutput(ffmpegProcess));
 
-      waitForFFmpegCompletion(ffmpegProcess);
+      waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS());
 
       int exitCode = ffmpegProcess.exitValue();
       if (exitCode != 0) {
@@ -155,11 +124,11 @@ public class MediaProcessingService {
 
       log.info("FFmpeg process completed successfully");
 
-      cleanUpWorkingDir(workDir, objectName);
+      cleanUpWorkingDir(processContext);
 
-      isRunning.set(false);
+      processContext.getIsRunning().set(false);
 
-      int totalChunksCount = totalChunks.get();
+      int totalChunksCount = processContext.getTotalChunks().get();
 
       FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
 
@@ -180,8 +149,13 @@ public class MediaProcessingService {
 
     } catch (Exception e) {
       log.error("FFmpeg execution failed", e);
-      isRunning.set(false); // Ensure we signal shutdown even on error
+      // processContext.getIsRunning().set(false); // Ensure we signal shutdown even
+      // on error
       throw new RuntimeException("Failed to process media file: " + objectName + " exception: " + e);
+    } finally {
+      if (ctx != null) {
+        ctx.getIsRunning().set(false);
+      }
     }
   }
 
@@ -281,7 +255,8 @@ public class MediaProcessingService {
         new InputStreamReader(process.getInputStream()))) {
       String line;
       while ((line = reader.readLine()) != null) {
-        log.debug("FFmpeg: {}", line);
+        log.debug("FFmpeg debug: {}", line);
+        log.info("FFmpeg info: {}", line);
         // Could parse progress here for metrics
       }
     } catch (IOException e) {
@@ -289,7 +264,7 @@ public class MediaProcessingService {
     }
   }
 
-  private void waitForFFmpegCompletion(Process process) throws Exception {
+  private void waitForFFmpegCompletion(Process process, AtomicLong lastChunkTimeMS) throws Exception {
     Instant overallDeadline = Instant.now().plus(FFMPEG_PROCESSING_TIMEOUT_M, ChronoUnit.MINUTES);
     long stallTimeoutMS = 1000 * 60 * 3;
 
@@ -322,14 +297,16 @@ public class MediaProcessingService {
     }
   }
 
-  private void startDirectoryWatcher(Path workDir) {
+  private void startDirectoryWatcher(MediaProcessingContext processContext) {
     try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
+
+      Path workDir = processContext.getWorkDir();
       workDir.register(watchService, StandardWatchEventKinds.ENTRY_CREATE);
 
       Path previousVideoChunk = null;
       Path previousAudioChunk = null;
 
-      while (isRunning.get() || !uploadQueue.isEmpty()) {
+      while (processContext.getIsRunning().get() || !processContext.getUploadQueue().isEmpty()) {
         WatchKey key;
         try {
           key = watchService.poll(500, TimeUnit.MILLISECONDS);
@@ -348,22 +325,22 @@ public class MediaProcessingService {
           Path fullPath = workDir.resolve(fileName);
           String name = fileName.toString();
 
-          lastChunkTimeMS.set(System.currentTimeMillis());
+          processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
           if (name.endsWith(".mp4")) {
             if (previousVideoChunk != null) {
               log.info("Enqueuing video chunk: {}", previousVideoChunk.getFileName());
-              safeEnqueue(previousVideoChunk);
+              safeEnqueue(processContext, previousVideoChunk);
             }
             previousVideoChunk = fullPath;
           } else if (name.endsWith(".wav")) {
             if (previousAudioChunk != null) {
               log.info("Enqueuing audio chunk: {}", previousAudioChunk.getFileName());
-              safeEnqueue(previousAudioChunk);
+              safeEnqueue(processContext, previousAudioChunk);
             }
             previousAudioChunk = fullPath;
           }
-          log.info("uploadQueue in watcher: {}", uploadQueue.toString());
+          log.info("uploadQueue in watcher: {}", processContext.getUploadQueue().toString());
         }
 
         boolean dirAccessible = key.reset();
@@ -374,9 +351,9 @@ public class MediaProcessingService {
       }
 
       if (previousVideoChunk != null)
-        safeEnqueue(previousVideoChunk);
+        safeEnqueue(processContext, previousVideoChunk);
       if (previousAudioChunk != null)
-        safeEnqueue(previousAudioChunk);
+        safeEnqueue(processContext, previousAudioChunk);
 
       log.info("Watcher stopped. Final chunks queued for upload");
     } catch (Exception e) {
@@ -384,10 +361,10 @@ public class MediaProcessingService {
     }
   }
 
-  private void startUploadDispatcher(String objectName, UUID fileId, MediaFileManifestDTO manifestDTO, String userId) {
-    while (isRunning.get() || !uploadQueue.isEmpty()) {
+  private void startUploadDispatcher(MediaProcessingContext processContext) {
+    while (processContext.getIsRunning().get() || !processContext.getUploadQueue().isEmpty()) {
       try {
-        Path chunkPath = uploadQueue.poll(1, TimeUnit.SECONDS);
+        Path chunkPath = processContext.getUploadQueue().poll(1, TimeUnit.SECONDS);
         if (chunkPath == null)
           continue;
 
@@ -396,8 +373,9 @@ public class MediaProcessingService {
         log.info("Uploading chunk: {}", chunkPath.getFileName());
 
         Thread.startVirtualThread(() -> {
-          chunkRegistry.put(chunkPath.toString(), UploadStatus.IN_PROGRESS);
-          uploadWorker(objectName, fileId, chunkPath, manifestDTO, userId);
+          processContext.getChunkUploadStatusMap().put(chunkPath.toString(),
+              com.cortex.cortex_media_processing_service.service.processing.UploadStatus.IN_PROGRESS);
+          uploadWorker(processContext, chunkPath);
         });
       } catch (Exception e) {
         Thread.currentThread().interrupt();
@@ -406,9 +384,10 @@ public class MediaProcessingService {
     }
   }
 
-  private void uploadWorker(String objectName, UUID fileId, Path chunkPath, MediaFileManifestDTO manifestDTO,
-      String userId) {
+  private void uploadWorker(MediaProcessingContext processContext, Path chunkPath) {
     try {
+      UUID fileId = processContext.getFileId();
+      String objectName = processContext.getObjectName();
       String fileName = chunkPath.getFileName().toString();
       int index = extractChunkNumber(fileName);
       String mediaType = fileName.contains("video") ? "video" : "audio";
@@ -422,18 +401,18 @@ public class MediaProcessingService {
 
       String gcsPath = gcsStorageService.uploadChunk(objectName, chunkPath);
 
-      chunkRegistry.put(chunkPath.toString(), UploadStatus.UPLOADED);
+      processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.UPLOADED);
 
       // Upload event for pipeline
       kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
           .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
-      ChunkPair chunkPair = chunkPairMap.compute(index, (k, v) -> {
+      ChunkPair chunkPair = processContext.getChunkPairMap().compute(index, (k, v) -> {
         if (v == null) {
           v = new ChunkPair();
           v.setStart_s(index * AUDIO_CHUNK_DURATION_S);
-          v.setEnd_s(Math.min((index + 1) * AUDIO_CHUNK_DURATION_S, manifestDTO.getDuration_s()));
+          v.setEnd_s(Math.min((index + 1) * AUDIO_CHUNK_DURATION_S, processContext.getManifestDTO().getDuration_s()));
         }
         if (fileName.contains("video")) {
           v.setVideoPath(gcsPath);
@@ -443,12 +422,12 @@ public class MediaProcessingService {
         return v;
       });
 
-      if (chunkPair.isComplete(manifestDTO)) {
+      if (chunkPair.isComplete(processContext.getManifestDTO())) {
         log.info("Chunk pair {} is complete. Processing for persistence.", index);
 
         MediaChunk chunk = mediaChunkRepository.save(MediaChunk.builder().fileId(fileId)
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
-            .status(MediaChunk.Status.UPLOADED).userId(userId).build());
+            .status(MediaChunk.Status.UPLOADED).userId(processContext.getUserId()).build());
 
         kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
@@ -458,17 +437,18 @@ public class MediaProcessingService {
         kafkaTemplate.send("media-chunk-uploaded",
             ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).fileId(fileId).objectName(objectName)
                 .chunkIndex(index).start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s())
-                .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath()).userId(userId).build());
+                .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath())
+                .userId(processContext.getUserId()).build());
 
-        totalChunks.incrementAndGet();
+        processContext.getTotalChunks().incrementAndGet();
 
-        chunkPairMap.remove(index);
+        processContext.getChunkPairMap().remove(index);
       }
 
       Files.deleteIfExists(chunkPath);
     } catch (Exception e) {
       log.error("Upload failed for {}", chunkPath, e);
-      chunkRegistry.put(chunkPath.toString(), UploadStatus.FAILED);
+      processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.FAILED);
       // Retry logic
     } finally {
       uploadSlots.release();
@@ -483,31 +463,31 @@ public class MediaProcessingService {
     return workDir;
   }
 
-  private void cleanUpWorkingDir(Path workDir, String objectName) {
-    log.info("Starting cleanup for working directory: {}", workDir);
+  private void cleanUpWorkingDir(MediaProcessingContext processContext) {
+    log.info("Starting cleanup for working directory: {}", processContext.getWorkDir());
 
     try {
       // 1. Sweep for any remaining chunks that weren't uploaded
-      try (var files = Files.list(workDir)) {
+      try (var files = Files.list(processContext.getWorkDir())) {
         files.filter(path -> {
           String name = path.getFileName().toString();
           return name.endsWith(".mp4") || name.endsWith(".wav");
         })
             .filter(path -> {
               String key = path.toString();
-              UploadStatus status = chunkRegistry.get(key);
+              UploadStatus status = processContext.getChunkUploadStatusMap().get(key);
               return status == null || status == UploadStatus.PENDING || status == UploadStatus.FAILED;
             })
             .forEach(path -> {
               log.info("Found remaining chunk during cleanup: {}", path.getFileName());
-              safeEnqueue(path);
+              safeEnqueue(processContext, path);
             });
       }
 
       // 2. Wait for upload queue to drain
-      while (!uploadQueue.isEmpty()) {
-        log.info("uploadqueue in cleanup: {}", uploadQueue.toString());
-        log.info("Waiting for {} remaining uploads...", uploadQueue.size());
+      while (!processContext.getUploadQueue().isEmpty()) {
+        log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
+        log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
         Thread.sleep(1000);
       }
 
@@ -517,7 +497,7 @@ public class MediaProcessingService {
       uploadSlots.release(MAX_CONCURRENT_UPLOADS);
 
       // 4. Verify all uploads completed successfully
-      long failedCount = chunkRegistry.values().stream()
+      long failedCount = processContext.getChunkUploadStatusMap().values().stream()
           .filter(status -> status == UploadStatus.FAILED)
           .count();
 
@@ -527,7 +507,7 @@ public class MediaProcessingService {
       }
 
       // 5. Delete the working directory recursively
-      try (var paths = Files.walk(workDir)) {
+      try (var paths = Files.walk(processContext.getWorkDir())) {
         paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
             .forEach(path -> {
               try {
@@ -538,22 +518,22 @@ public class MediaProcessingService {
             });
       }
 
-      log.info("Successfully cleaned up working directory: {}", workDir);
+      log.info("Successfully cleaned up working directory: {}", processContext.getWorkDir());
 
     } catch (Exception e) {
-      log.error("Error during cleanup of working directory: {}", workDir, e);
+      log.error("Error during cleanup of working directory: {}", processContext.getWorkDir(), e);
     }
   }
 
-  private void safeEnqueue(Path path) {
-    UploadStatus currentStatus = chunkRegistry.get(path.toString());
+  private void safeEnqueue(MediaProcessingContext processContext, Path path) {
+    UploadStatus currentStatus = processContext.getChunkUploadStatusMap().get(path.toString());
     if (currentStatus == UploadStatus.UPLOADED || currentStatus == UploadStatus.IN_PROGRESS
         || currentStatus == UploadStatus.PENDING) {
       log.info("Chunk {} is already being processed or uploaded or is pending. Skipping.", path.getFileName());
       return;
     }
-    chunkRegistry.put(path.toString(), UploadStatus.PENDING);
-    uploadQueue.offer(path);
+    processContext.getChunkUploadStatusMap().put(path.toString(), UploadStatus.PENDING);
+    processContext.getUploadQueue().offer(path);
   }
 
   private int extractChunkNumber(String fileName) {
@@ -565,38 +545,4 @@ public class MediaProcessingService {
     }
     return -1;
   }
-
-  // private void processAudioChunk(byte[] audioChunk, int index) {
-  // CompletableFuture.runAsync(() -> {
-  // try {
-  // byte[] wavData = WavUtils.addHeader(audioChunk);
-
-  // Map<String, Object> response = transcriptionService.transcribe(wavData);
-
-  // String transcript = (String) response.get("text");
-
-  // String language = (String) response.get("language");
-
-  // log.info("Transcribed audio chunk #{} in language {}: {}", index, language,
-  // transcript);
-  // } catch (Exception e) {
-  // log.error("Transcription failed: ", e);
-  // }
-  // });
-  // }
-
-  // private byte[] convertSampleToBytes(Frame frame) {
-  // ShortBuffer sb = (ShortBuffer) frame.samples[0];
-  // int samples = sb.limit();
-  // byte[] bytes = new byte[samples * 2];
-
-  // for (int i = 0; i < samples; i++) {
-  // short sample = sb.get(i);
-  // bytes[i * 2] = (byte) (sample & 0xff);
-  // bytes[i * 2 + 1] = (byte) ((sample >> 8) & 0xff);
-  // }
-
-  // return bytes;
-  // }
-
 }

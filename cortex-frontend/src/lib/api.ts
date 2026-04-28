@@ -1,5 +1,5 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-const API_VERSION = "/v1";
+const API_VERSION = "/api/v1";
 
 // API_URL is for data endpoints (e.g., https://domain.com/api/v1)
 const API_URL = `${API_BASE}${API_VERSION}`;
@@ -128,7 +128,7 @@ export async function updateFileName(fileId: string, displayName: string) {
 }
 
 export async function deleteFile(fileId: string) {
-  return request<void>(`/${fileId}`, {
+  return request<void>(`/files/${fileId}`, {
     method: "DELETE",
   });
 }
