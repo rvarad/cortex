@@ -182,7 +182,7 @@ services:
       context: ./cortex-frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=https://${DOMAIN_NAME}/api
+        - NEXT_PUBLIC_API_URL=https://${DOMAIN_NAME}
     container_name: cortex-frontend
     restart: always
     # Public port removed - access only via Nginx (swag)
