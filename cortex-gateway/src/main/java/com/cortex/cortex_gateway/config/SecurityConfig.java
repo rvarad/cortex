@@ -13,6 +13,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import com.cortex.cortex_gateway.security.OAuth2LoginSuccessHandler;
+
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
@@ -34,7 +36,8 @@ public class SecurityConfig {
   }
 
   @Bean
-  public SecurityFilterChain filterChain(HttpSecurity httpSecurity) throws Exception {
+  public SecurityFilterChain filterChain(HttpSecurity httpSecurity, OAuth2LoginSuccessHandler successHandler)
+      throws Exception {
     return httpSecurity
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/api/v1/webhook/**").permitAll()
@@ -42,7 +45,7 @@ public class SecurityConfig {
             .requestMatchers("/auth/**").permitAll()
             .anyRequest().authenticated())
         .oauth2Login(oauth -> oauth
-            .defaultSuccessUrl(allowedOrigins + "/dashboard", true))
+            .successHandler(successHandler))
         .logout(logout -> logout
             .logoutUrl("/auth/logout")
             .logoutSuccessUrl(allowedOrigins)

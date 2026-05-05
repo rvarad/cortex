@@ -6,7 +6,7 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.5.8</version>
+		<version>3.5.14</version>
 		<relativePath /> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.cortex</groupId>
@@ -126,6 +126,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+
+		<dependency>
+		<groupId>org.springframework.grpc</groupId>
+			<artifactId>spring-grpc-server-spring-boot-starter</artifactId>
+			<version>0.12.0</version>
 		</dependency>
 	</dependencies>
 

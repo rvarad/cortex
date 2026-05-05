@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+option java_package = "com.cortex.cortex_common.grpc";
+
+option java_multiple_files = true;
+
+service UserService {
+  rpc SyncUser (SyncUserRequest) returns (SyncUserResponse);
+}
+
+message SyncUserRequest {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  string pictureUrl = 4;
+}
+
+message SyncUserResponse {
+  bool success = 1;
+  string message = 2;
+}
