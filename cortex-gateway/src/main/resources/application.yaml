@@ -1,6 +1,7 @@
 spring:
   application:
     name: cortex-gateway
+
   cloud:
     gateway:
       server:
@@ -20,6 +21,13 @@ spring:
               uri: http://${RAG_HOST:localhost}:8083
               predicates:
                 - Path=/api/v1/search/**
+
+  grpc:
+    client:
+      channels:
+        ingestion-channel:
+          address: static://${INGESTION_HOST:localhost}:9090
+          negotiation-type: plaintext
 
 server:
   port: 8080
