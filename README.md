@@ -71,3 +71,7 @@ graph LR
 - **AI**: Groq (Whisper Large v3), Google Gemini 2.5 Flash (Vision), Gemini Embeddings (768-dim)
 - **Infra**: Docker Compose, Nginx (SWAG), GCS, Cloud SQL, Aiven Kafka (mTLS)
 - **Deployment**: GCP e2-standard-2 VM, manual `deploy.sh`
+
+## Current Status
+
+- **Infrastructure migration in progress**: Moving from GCP (e2-standard-2) to Oracle Cloud. GCS, Cloud SQL, and Aiven Kafka integrations are being re-evaluated for the new environment.
