@@ -20,16 +20,36 @@ services:
       - "80:80"
     restart: always
 
-  # Cloud SQL Auth Proxy (Secure DB Connection)
-  cloud-sql-proxy:
-    image: gcr.io/cloudsql-docker/gce-proxy:1.33.2
-    container_name: cloud-sql-proxy
-    command:
-      - "/cloud_sql_proxy"
-      - "-instances=${DB_INSTANCE_CONNECTION_NAME}=tcp:0.0.0.0:5432"
+  postgres-db:
+    image: pgvector/pgvector:pg15
+    container_name: postgres-db
+    restart: always
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Database GUI (Adminer)
+  db-admin:
+    image: adminer:latest
+    container_name: db-admin
     restart: always
+    ports:
+      - "8085:8080"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:8-alpine
@@ -42,9 +62,6 @@ services:
       dockerfile: cortex-gateway/Dockerfile
     container_name: cortex-gateway
     restart: always
-    # Public port removed - access only via Nginx (swag)
-    # ports:
-    #   - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
@@ -68,15 +85,14 @@ services:
       context: .
       dockerfile: cortex-ingestion/Dockerfile
     container_name: cortex-ingestion
-    # Removed public port 8080 - now accessible only via Gateway
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
-      # Database (Connects to proxy)
-      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      # DB
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - DB_USERNAME=postgres
       - DB_PASSWORD=${DB_PASSWORD}
       # Kafka (mTLS via mounted certs)
@@ -88,9 +104,9 @@ services:
       - SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_PASSWORD=${KAFKA_SSL_KEYSTORE_PASSWORD}
       - SPRING_KAFKA_PROPERTIES_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
     volumes:
-      - ./certs:/etc/kafka/secrets:ro
+      - ../certs:/etc/kafka/secrets:ro
     depends_on:
-      - cloud-sql-proxy
+      - postgres-db
     logging:
       driver: "json-file"
       options:
@@ -103,8 +119,6 @@ services:
       dockerfile: cortex-media-processing-service/Dockerfile
     container_name: cortex-media-processing-service
     restart: always
-    # ports:
-    #   - "8082:8082"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
       # GCP
@@ -112,7 +126,7 @@ services:
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
-      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - DB_USERNAME=postgres
       - DB_PASSWORD=${DB_PASSWORD}
       # Kafka
@@ -128,9 +142,9 @@ services:
       - GROQ_BASE_URL=https://api.groq.com/openai
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
-      - ./certs:/etc/kafka/secrets:ro
+      - ../certs:/etc/kafka/secrets:ro
     depends_on:
-      - cloud-sql-proxy
+      - postgres-db
     logging:
       driver: "json-file"
       options:
@@ -152,7 +166,7 @@ services:
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
-      - DB_URL=jdbc:postgresql://cloud-sql-proxy:5432/postgres
+      - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
       - DB_USERNAME=postgres
       - DB_PASSWORD=${DB_PASSWORD}
       # Kafka
@@ -168,9 +182,9 @@ services:
       - GROQ_BASE_URL=https://api.groq.com/openai
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
-      - ./certs:/etc/kafka/secrets:ro
+      - ../certs:/etc/kafka/secrets:ro
     depends_on:
-      - cloud-sql-proxy
+      - postgres-db
     logging:
       driver: "json-file"
       options:
@@ -185,9 +199,6 @@ services:
         - NEXT_PUBLIC_API_URL=https://${DOMAIN_NAME}
     container_name: cortex-frontend
     restart: always
-    # Public port removed - access only via Nginx (swag)
-    # ports:
-    #   - "80:3000"
     depends_on:
       - cortex-gateway
     logging:
@@ -195,3 +206,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  postgres-data:

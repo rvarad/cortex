@@ -2,101 +2,84 @@
 set -e
 
 # ==========================================
-# CONFIGURATION
+# 1. VERIFY .env FILE EXISTS
 # ==========================================
-PROJECT_ID=$(gcloud config get-value project)
-REGION="asia-south1"
-DB_INSTANCE_CONNECTION_NAME="${PROJECT_ID}:${REGION}:cortex-prod-db"
-GCS_BUCKET="cortex-prod-bucket"
-DOMAIN_NAME="cortex-media.in"
-
-# Secret names in Secret Manager
-SECRET_KAFKA_URL="aiven-kafka-bootstrap-servers"
-SECRET_DB_PASS="cortex-prod-db-password"
-SECRET_GROQ_KEY="cortex-groq-api-key"
-SECRET_GEMINI_KEY="cortex-gemini-api-key"
-SECRET_KAFKA_CA="aiven-kafka-ca-cert"
-SECRET_KAFKA_CERT="aiven-kafka-service-cert"
-SECRET_KAFKA_KEY="aiven-kafka-service-key"
-SECRET_GOOGLE_CLIENT_ID="cortex-google-oauth2-client-id"
-SECRET_GOOGLE_CLIENT_SECRET="cortex-google-oauth2-client-secret"
-SECRET_INTERNAL_JWT="cortex-internal-jwt-secret"
-
-# Helper to fetch secret
-fetch_secret() {
-    gcloud secrets versions access latest --secret="$1"
-}
+if [ ! -f ../.env ]; then
+    echo "❌ Error: ../.env file is missing!"
+    echo "Please create a '.env' file in the parent directory (alongside cortex/) before deploying."
+    echo "You can use the template below as a guide:"
+    echo ""
+    echo "=========================================="
+    echo "# GCP"
+    echo "GCP_PROJECT_ID=your-gcp-project-id"
+    echo "GCP_LOCATION=asia-south1"
+    echo "GCS_BUCKET_NAME=your-gcs-bucket-name"
+    echo "DOMAIN_NAME=cortex-media.in"
+    echo ""
+    echo "# Database"
+    echo "DB_PASSWORD=your-secure-db-password"
+    echo ""
+    echo "# Kafka"
+    echo "KAFKA_BOOTSTRAP_SERVERS=your-aiven-kafka-bootstrap-servers"
+    echo ""
+    echo "# AI Keys"
+    echo "GROQ_API_KEY=your-groq-api-key"
+    echo "GEMINI_API_KEY=your-gemini-api-key"
+    echo ""
+    echo "# Gateway & Security"
+    echo "GOOGLE_CLIENT_ID=your-google-oauth2-client-id"
+    echo "GOOGLE_CLIENT_SECRET=your-google-oauth2-client-secret"
+    echo "INTERNAL_JWT_SECRET=your-internal-jwt-secret"
+    echo ""
+    echo "# Kafka SSL (paths inside Docker containers - keep these defaults)"
+    echo "KAFKA_SSL_TRUSTSTORE_LOCATION=/etc/kafka/secrets/truststore.jks"
+    echo "KAFKA_SSL_KEYSTORE_LOCATION=/etc/kafka/secrets/keystore.jks"
+    echo "KAFKA_SSL_KEY_PASSWORD=changeit"
+    echo "KAFKA_SSL_KEYSTORE_PASSWORD=changeit"
+    echo "KAFKA_SSL_TRUSTSTORE_PASSWORD=changeit"
+    echo "=========================================="
+    exit 1
+fi
 
 # ==========================================
-# 1. FETCH CERTS & SETUP SSL
+# 2. CONVERT CERTS & SETUP SSL
 # ==========================================
-echo "🔐 Fetching certificates..."
-mkdir -p certs
+RAW_CERT_DIR="../certs/raw"
+OUTPUT_CERT_DIR="../certs"
 
-fetch_secret "$SECRET_KAFKA_CA" > certs/ca.pem
-fetch_secret "$SECRET_KAFKA_CERT" > certs/service.cert
-fetch_secret "$SECRET_KAFKA_KEY" > certs/service.key
+echo "🔐 Checking for Aiven certificates..."
+if [ ! -f "$RAW_CERT_DIR/ca.pem" ] || [ ! -f "$RAW_CERT_DIR/service.cert" ] || [ ! -f "$RAW_CERT_DIR/service.key" ]; then
+    echo "❌ Error: One or more Aiven certificates are missing in '$RAW_CERT_DIR/'!"
+    echo "Please ensure the following three files exist:"
+    echo "  - $RAW_CERT_DIR/ca.pem"
+    echo "  - $RAW_CERT_DIR/service.cert"
+    echo "  - $RAW_CERT_DIR/service.key"
+    exit 1
+fi
 
 echo "🛠️ Converting certificates to Java KeyStore..."
+mkdir -p "$OUTPUT_CERT_DIR"
 
 # Create TrustStore
-rm -f certs/truststore.jks
-keytool -import -noprompt -alias ca -file certs/ca.pem -keystore certs/truststore.jks -storepass changeit
+rm -f "$OUTPUT_CERT_DIR/truststore.jks"
+keytool -import -noprompt -alias ca -file "$RAW_CERT_DIR/ca.pem" -keystore "$OUTPUT_CERT_DIR/truststore.jks" -storepass changeit
 
 # Create KeyStore (PEM -> PKCS12 -> JKS)
-rm -f certs/keystore.p12 certs/keystore.jks
-openssl pkcs12 -export -in certs/service.cert -inkey certs/service.key \
-    -out certs/keystore.p12 -name service -CAfile certs/ca.pem -caname root -passout pass:changeit
-keytool -importkeystore -deststorepass changeit -destkeypass changeit -destkeystore certs/keystore.jks \
-    -srckeystore certs/keystore.p12 -srcstoretype PKCS12 -srcstorepass changeit -alias service
+rm -f "$OUTPUT_CERT_DIR/keystore.p12" "$OUTPUT_CERT_DIR/keystore.jks"
+openssl pkcs12 -export -in "$RAW_CERT_DIR/service.cert" -inkey "$RAW_CERT_DIR/service.key" \
+    -out "$OUTPUT_CERT_DIR/keystore.p12" -name service -CAfile "$RAW_CERT_DIR/ca.pem" -caname root -passout pass:changeit
+keytool -importkeystore -deststorepass changeit -destkeypass changeit -destkeystore "$OUTPUT_CERT_DIR/keystore.jks" \
+    -srckeystore "$OUTPUT_CERT_DIR/keystore.p12" -srcstoretype PKCS12 -srcstorepass changeit -alias service
 
-# Cleanup raw keys
-rm certs/service.key certs/service.cert certs/keystore.p12
+# Cleanup temporary PKCS12 file (keep raw certificates in certs/raw/ for future deployments)
+rm -f "$OUTPUT_CERT_DIR/keystore.p12"
 
-# ==========================================
-# 2. GENERATE .env FILE
-# ==========================================
-echo "📝 Generating .env file..."
-
-cat > .env <<EOF
-# Auto-generated by deploy.sh — $(date)
-# GCP
-GCP_PROJECT_ID=${PROJECT_ID}
-GCP_LOCATION=${REGION}
-GCS_BUCKET_NAME=${GCS_BUCKET}
-DB_INSTANCE_CONNECTION_NAME=${DB_INSTANCE_CONNECTION_NAME}
-DOMAIN_NAME=${DOMAIN_NAME}
-
-# Database
-DB_PASSWORD=$(fetch_secret "$SECRET_DB_PASS")
-
-# Kafka
-KAFKA_BOOTSTRAP_SERVERS=$(fetch_secret "$SECRET_KAFKA_URL")
-
-# AI Keys
-GROQ_API_KEY=$(fetch_secret "$SECRET_GROQ_KEY")
-GEMINI_API_KEY=$(fetch_secret "$SECRET_GEMINI_KEY")
-
-# Gateway & Security
-GOOGLE_CLIENT_ID=$(fetch_secret "$SECRET_GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET=$(fetch_secret "$SECRET_GOOGLE_CLIENT_SECRET")
-INTERNAL_JWT_SECRET=$(fetch_secret "$SECRET_INTERNAL_JWT")
-
-# Kafka SSL (paths inside Docker containers)
-KAFKA_SSL_TRUSTSTORE_LOCATION=/etc/kafka/secrets/truststore.jks
-KAFKA_SSL_KEYSTORE_LOCATION=/etc/kafka/secrets/keystore.jks
-KAFKA_SSL_KEY_PASSWORD=changeit
-KAFKA_SSL_KEYSTORE_PASSWORD=changeit
-KAFKA_SSL_TRUSTSTORE_PASSWORD=changeit
-EOF
-
-chmod 600 .env
-echo "✅ .env file created (owner-read-only)"
+echo "✅ JKS certificates generated successfully in '$OUTPUT_CERT_DIR/'."
 
 # ==========================================
 # 3. DEPLOY
 # ==========================================
 echo "🚀 Starting Docker containers..."
-docker compose -f docker-compose.prod.yaml up -d --build --remove-orphans
+docker compose -f docker-compose.prod.yaml --env-file ../.env up -d --build --remove-orphans
 
 echo "✅ Deployment complete!"
