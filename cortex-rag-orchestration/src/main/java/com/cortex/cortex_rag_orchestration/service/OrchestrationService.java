@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -33,14 +34,16 @@ public class OrchestrationService {
   private final TranscriptionService transcriptionService;
   private final EmbeddingService embeddingService;
 
+  private int INFERENCE_TIMEOUT_SECONDS = 200;
+  private int EMBED_TIMEOUT_SECONDS = 45;
+
   @KafkaListener(topics = "media-chunk-uploaded", groupId = "${spring.kafka.consumer.group-id}", concurrency = "3", properties = {
       "max.poll.records=1",
-      "max.poll.interval.ms=300000"
+      "max.poll.interval.ms=480000" // 8 minutes
   })
-  public CompletableFuture<Void> processMediaChunk(ChunkUploadedEventDTO event) {
+  public void processMediaChunk(ChunkUploadedEventDTO event) {
 
     try {
-
       if (event.getVideoPath() != null && !event.getVideoPath().isEmpty()) {
         kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
@@ -86,7 +89,7 @@ public class OrchestrationService {
               }, executorService)
               : CompletableFuture.completedFuture(new TranscriptionService.TranscriptionResult("", null));
 
-      CompletableFuture.allOf(visionFuture, transcriptionFuture).join();
+      CompletableFuture.allOf(visionFuture, transcriptionFuture).get(INFERENCE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
       String visionDescription = visionFuture.get();
       TranscriptionService.TranscriptionResult transcriptionResult = transcriptionFuture.get();
@@ -95,17 +98,22 @@ public class OrchestrationService {
       log.info("Audio Transcription: {}", transcriptionResult.transcript());
       log.info("Detected Language: {}", transcriptionResult.languageCode());
 
-      embeddingService.generateAndSaveEmbedding(visionDescription, transcriptionResult.transcript(), event.getChunkId(),
-          event.getChunkIndex(), transcriptionResult.languageCode());
+      CompletableFuture
+          .runAsync(() -> embeddingService.generateAndSaveEmbedding(visionDescription, transcriptionResult.transcript(),
+              event.getChunkId(),
+              event.getChunkIndex(), transcriptionResult.languageCode()), executorService)
+          .get(EMBED_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
       kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
           PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
               .chunkIndex(event.getChunkIndex())
               .eventType(PipelineEventEnum.EMBEDDING_COMPLETE).message("Embedding complete")
               .build());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException("Error processing media chunk", e);
     } catch (Exception e) {
-      log.error("Error processing media chunk for object: {}", event.getObjectName(), e);
+      throw new RuntimeException("Error processing media chunk", e);
     }
-    return CompletableFuture.completedFuture(null);
   }
 }

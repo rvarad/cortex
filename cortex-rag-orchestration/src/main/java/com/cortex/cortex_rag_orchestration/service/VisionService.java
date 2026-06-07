@@ -63,7 +63,7 @@ public class VisionService {
 
       log.info("Generating description for video: {}", gcsUri);
 
-      // inferenceRateLimiter.acquire();
+      inferenceRateLimiter.acquire();
 
       GenerateContentResponse response = genAiClient.models.generateContent(MODEL_NAME,
           Content.fromParts(Part.fromUri(gcsUri, "video/mp4"), Part.fromText(VIDEO_ANALYSIS_PROMPT)), null);
