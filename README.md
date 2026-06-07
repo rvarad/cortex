@@ -1,6 +1,6 @@
 # Cortex
 
-**[Live Demo](https://cortex-media.in)**
+**[Live Demo (Temporarily Offline)](https://cortex-media.in)**
 
 A media intelligence platform. Upload video or audio — Cortex automatically chunks it, transcribes the audio (Groq Whisper), analyzes the video (Gemini), generates embeddings, and indexes everything into a searchable vector database. Then search across all your media using natural language.
 
