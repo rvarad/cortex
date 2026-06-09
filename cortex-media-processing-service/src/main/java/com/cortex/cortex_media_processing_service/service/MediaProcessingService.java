@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,6 +39,7 @@ import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
 import com.cortex.cortex_media_processing_service.service.processing.MediaProcessingContext;
 import com.cortex.cortex_media_processing_service.service.processing.UploadStatus;
+import static com.cortex.cortex_common.utils.MdcUtils.withMDC;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -99,8 +101,8 @@ public class MediaProcessingService {
       String videoPattern = workDir.resolve("video_chunk_%03d.mp4").toString();
       String audioPattern = workDir.resolve("audio_chunk_%03d.wav").toString();
 
-      Thread.startVirtualThread(() -> startDirectoryWatcher(processContext));
-      Thread.startVirtualThread(() -> startUploadDispatcher(processContext));
+      Thread.startVirtualThread(withMDC(() -> startDirectoryWatcher(processContext)));
+      Thread.startVirtualThread(withMDC(() -> startUploadDispatcher(processContext)));
 
       processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
@@ -112,7 +114,7 @@ public class MediaProcessingService {
 
       Process ffmpegProcess = startFFmpegProcess(streamUrl, videoPattern, audioPattern);
 
-      Thread.startVirtualThread(() -> monitorFFmpegOutput(ffmpegProcess));
+      Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(ffmpegProcess)));
 
       waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS());
 
@@ -372,11 +374,11 @@ public class MediaProcessingService {
 
         log.info("Uploading chunk: {}", chunkPath.getFileName());
 
-        Thread.startVirtualThread(() -> {
+        Thread.startVirtualThread(withMDC(() -> {
           processContext.getChunkUploadStatusMap().put(chunkPath.toString(),
               com.cortex.cortex_media_processing_service.service.processing.UploadStatus.IN_PROGRESS);
           uploadWorker(processContext, chunkPath);
-        });
+        }));
       } catch (Exception e) {
         Thread.currentThread().interrupt();
         break;
