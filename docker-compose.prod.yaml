@@ -3,6 +3,7 @@ services:
   swag:
     image: linuxserver/swag:latest
     container_name: swag
+    mem_limit: 256m
     cap_add:
       - NET_ADMIN
     environment:
@@ -34,6 +35,7 @@ services:
   redis:
     image: redis:8-alpine
     container_name: redis
+    mem_limit: 256m
     restart: always
 
   cortex-gateway:
@@ -41,6 +43,7 @@ services:
       context: .
       dockerfile: cortex-gateway/Dockerfile
     container_name: cortex-gateway
+    mem_limit: 1g
     restart: always
     # Public port removed - access only via Nginx (swag)
     # ports:
@@ -68,6 +71,8 @@ services:
       context: .
       dockerfile: cortex-ingestion/Dockerfile
     container_name: cortex-ingestion
+    mem_limit: 1g
+    restart: always
     # Removed public port 8080 - now accessible only via Gateway
     environment:
       - SPRING_PROFILES_ACTIVE=prod
@@ -102,6 +107,7 @@ services:
       context: .
       dockerfile: cortex-media-processing-service/Dockerfile
     container_name: cortex-media-processing-service
+    mem_limit: 3g
     restart: always
     # ports:
     #   - "8082:8082"
@@ -142,6 +148,7 @@ services:
       context: .
       dockerfile: cortex-rag-orchestration/Dockerfile
     container_name: cortex-rag-orchestration
+    mem_limit: 1.5g
     restart: always
     # Removed public port 8083 - now accessible only via Gateway
     environment:
@@ -184,6 +191,7 @@ services:
       args:
         - NEXT_PUBLIC_API_URL=https://${DOMAIN_NAME}
     container_name: cortex-frontend
+    mem_limit: 1g
     restart: always
     # Public port removed - access only via Nginx (swag)
     # ports:
