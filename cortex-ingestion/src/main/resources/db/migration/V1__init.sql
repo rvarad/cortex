@@ -1,41 +1,13 @@
---
--- PostgreSQL database dump
---
+-- V1__init.sql
+-- Baseline schema for Cortex (cleaned from pg_dump --schema-only).
+-- pgvector extension, get_pg_dictionary(), and the four core tables.
+-- Indexes + unique(file_id, chunk_index) live in V2.
 
+CREATE EXTENSION IF NOT EXISTS vector;
 
--- Dumped from database version 15.16 (Debian 15.16-1.pgdg12+1)
--- Dumped by pg_dump version 15.16 (Debian 15.16-1.pgdg12+1)
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- Name: vector; Type: EXTENSION; Schema: -; Owner: -
---
-
-CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
-
-
---
--- Name: EXTENSION vector; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access methods';
-
-
---
--- Name: get_pg_dictionary(text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.get_pg_dictionary(lang_code text) RETURNS regconfig
+-- Whisper language code -> Postgres text-search dictionary (regconfig).
+-- Used by MediaChunkRepository.lexicalSearch. IMMUTABLE so it's index-usable.
+CREATE FUNCTION get_pg_dictionary(lang_code text) RETURNS regconfig
     LANGUAGE plpgsql IMMUTABLE
     AS $$
 BEGIN
@@ -74,123 +46,64 @@ BEGIN
 END;
 $$;
 
-
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
---
--- Name: file_metadata; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_metadata (
-    id uuid NOT NULL,
-    bucket_name character varying(255) NOT NULL,
-    content_type character varying(255) NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    file_display_name character varying(255) NOT NULL,
-    file_size bigint NOT NULL,
-    file_status character varying(255) NOT NULL,
-    object_name character varying(255) NOT NULL,
-    total_chunks integer,
-    user_id character varying(255) NOT NULL,
-    CONSTRAINT file_metadata_file_status_check1 CHECK (((file_status)::text = ANY ((ARRAY['PENDING'::character varying, 'UPLOADED'::character varying, 'CHUNKED'::character varying, 'PROCESSING'::character varying, 'COMPLETED'::character varying])::text[])))
-);
-
-
---
--- Name: media_chunk; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.media_chunk (
-    id uuid NOT NULL,
-    chunk_index integer NOT NULL,
-    embedding public.vector(768),
-    end_time double precision NOT NULL,
-    file_id uuid NOT NULL,
-    language_code character varying(255),
-    start_time double precision NOT NULL,
-    status character varying(255),
-    transcript text,
-    user_id character varying(255) NOT NULL,
-    visual_summary text,
-    CONSTRAINT media_chunk_status_check CHECK (((status)::text = ANY ((ARRAY['UPLOADED'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying])::text[])))
-);
-
-
---
--- Name: pipeline_events; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pipeline_events (
-    id uuid NOT NULL,
-    chunk_id uuid,
-    chunk_index integer,
-    created_at timestamp(6) without time zone NOT NULL,
-    event_type character varying(255) NOT NULL,
-    file_id uuid NOT NULL,
-    message character varying(255) NOT NULL,
-    metadata jsonb NOT NULL,
-    CONSTRAINT pipeline_events_event_type_check CHECK (((event_type)::text = ANY ((ARRAY['PIPELINE_STARTED'::character varying, 'CHUNKING_STARTED'::character varying, 'CHUNKING_COMPLETE'::character varying, 'CHUNK_UPLOAD_STARTED'::character varying, 'CHUNK_UPLOAD_COMPLETE'::character varying, 'MEDIA_CHUNK_READY'::character varying, 'VISION_ANALYSIS_STARTED'::character varying, 'VISION_ANALYSIS_COMPLETE'::character varying, 'TRANSCRIPTION_STARTED'::character varying, 'TRANSCRIPTION_COMPLETE'::character varying, 'EMBEDDING_COMPLETE'::character varying, 'PIPELINE_COMPLETE'::character varying])::text[])))
-);
-
-
---
--- Name: users; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.users (
-    id character varying(255) NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    email character varying(255) NOT NULL,
+CREATE TABLE users (
+    id            varchar(255)                   NOT NULL,
+    created_at    timestamp(6) without time zone NOT NULL,
+    email         varchar(255)                   NOT NULL,
     last_login_at timestamp(6) without time zone NOT NULL,
-    name character varying(255) NOT NULL,
-    picture_url character varying(255)
+    name          varchar(255)                   NOT NULL,
+    picture_url   varchar(255),
+    CONSTRAINT users_pkey     PRIMARY KEY (id),
+    CONSTRAINT uq_users_email UNIQUE (email)
 );
 
+CREATE TABLE file_metadata (
+    id                uuid                           NOT NULL,
+    bucket_name       varchar(255)                   NOT NULL,
+    content_type      varchar(255)                   NOT NULL,
+    created_at        timestamp(6) without time zone NOT NULL,
+    file_display_name varchar(255)                   NOT NULL,
+    file_size         bigint                         NOT NULL,
+    file_status       varchar(255)                   NOT NULL,
+    object_name       varchar(255)                   NOT NULL,
+    total_chunks      integer,
+    user_id           varchar(255)                   NOT NULL,
+    CONSTRAINT file_metadata_pkey PRIMARY KEY (id),
+    CONSTRAINT file_metadata_file_status_check
+        CHECK (file_status IN ('PENDING','UPLOADED','CHUNKED','PROCESSING','COMPLETED'))
+);
 
---
--- Name: file_metadata file_metadata_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
+CREATE TABLE media_chunk (
+    id             uuid             NOT NULL,
+    chunk_index    integer          NOT NULL,
+    embedding      vector(768),
+    end_time       double precision NOT NULL,
+    file_id        uuid             NOT NULL,
+    language_code  varchar(255),
+    start_time     double precision NOT NULL,
+    status         varchar(255),
+    transcript     text,
+    user_id        varchar(255)     NOT NULL,
+    visual_summary text,
+    CONSTRAINT media_chunk_pkey PRIMARY KEY (id),
+    CONSTRAINT media_chunk_status_check
+        CHECK (status IN ('UPLOADED','IN_PROGRESS','COMPLETED','FAILED'))
+);
 
-ALTER TABLE ONLY public.file_metadata
-    ADD CONSTRAINT file_metadata_pkey PRIMARY KEY (id);
-
-
---
--- Name: media_chunk media_chunk_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.media_chunk
-    ADD CONSTRAINT media_chunk_pkey PRIMARY KEY (id);
-
-
---
--- Name: pipeline_events pipeline_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pipeline_events
-    ADD CONSTRAINT pipeline_events_pkey PRIMARY KEY (id);
-
-
---
--- Name: users uk6dotkott2kjsp8vw4d0m25fb7; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT uk6dotkott2kjsp8vw4d0m25fb7 UNIQUE (email);
-
-
---
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
-
---
--- PostgreSQL database dump complete
---
-
-
+CREATE TABLE pipeline_events (
+    id          uuid                           NOT NULL,
+    chunk_id    uuid,
+    chunk_index integer,
+    created_at  timestamp(6) without time zone NOT NULL,
+    event_type  varchar(255)                   NOT NULL,
+    file_id     uuid                           NOT NULL,
+    message     varchar(255)                   NOT NULL,
+    metadata    jsonb                          NOT NULL,
+    CONSTRAINT pipeline_events_pkey PRIMARY KEY (id),
+    CONSTRAINT pipeline_events_event_type_check
+        CHECK (event_type IN (
+            'PIPELINE_STARTED','CHUNKING_STARTED','CHUNKING_COMPLETE','CHUNK_UPLOAD_STARTED',
+            'CHUNK_UPLOAD_COMPLETE','MEDIA_CHUNK_READY','VISION_ANALYSIS_STARTED','VISION_ANALYSIS_COMPLETE',
+            'TRANSCRIPTION_STARTED','TRANSCRIPTION_COMPLETE','EMBEDDING_COMPLETE','PIPELINE_COMPLETE'
+        ))
+);
