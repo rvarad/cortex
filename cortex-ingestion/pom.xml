@@ -67,6 +67,16 @@
 			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
@@ -129,7 +139,7 @@
 		</dependency>
 
 		<dependency>
-		<groupId>org.springframework.grpc</groupId>
+			<groupId>org.springframework.grpc</groupId>
 			<artifactId>spring-grpc-server-spring-boot-starter</artifactId>
 			<version>0.12.0</version>
 		</dependency>
