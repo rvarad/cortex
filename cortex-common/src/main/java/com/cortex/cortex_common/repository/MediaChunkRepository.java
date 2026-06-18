@@ -33,13 +33,9 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
             WHERE status = 'COMPLETED'
             AND user_id = :userId
             AND (:fileId IS NULL OR file_id = :fileId)
-            AND(
-                to_tsvector('english', coalesce(visual_summary, '')) ||
-                to_tsvector(get_pg_dictionary(:langCode), coalesce(transcript, ''))
-            ) @@ websearch_to_tsquery(get_pg_dictionary(:langCode), :queryText)
+            AND search_vector @@ websearch_to_tsquery(get_pg_dictionary(:langCode), :queryText)
             ORDER BY ts_rank(
-                to_tsvector('english', coalesce(visual_summary, '')) ||
-                to_tsvector(get_pg_dictionary(:langCode), coalesce(transcript, '')),
+                search_vector,
                 websearch_to_tsquery(get_pg_dictionary(:langCode), :queryText)
             ) DESC
             LIMIT :maxResults
