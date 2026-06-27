@@ -38,7 +38,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Database GUI (Adminer) — bound to loopback only; reach it via SSH tunnel
+  # Database GUI (Adminer)
   db-admin:
     image: adminer:latest
     container_name: db-admin

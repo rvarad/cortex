@@ -44,9 +44,6 @@ fi
 # ==========================================
 # 1b. VERIFY GCP SERVICE-ACCOUNT KEY EXISTS
 # ==========================================
-# Unlike the old GCP VM, the Oracle VM has no metadata server, so Application
-# Default Credentials are NOT available. GCS and Vertex AI auth now depends on a
-# mounted service-account key file. Fail fast here instead of at runtime.
 GCP_CREDENTIALS_FILE="../gcp-credentials.json"
 if [ ! -f "$GCP_CREDENTIALS_FILE" ]; then
     echo "❌ Error: GCP service-account key '$GCP_CREDENTIALS_FILE' is missing!"
