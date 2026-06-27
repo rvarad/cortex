@@ -42,6 +42,24 @@ if [ ! -f ../.env ]; then
 fi
 
 # ==========================================
+# 1b. VERIFY GCP SERVICE-ACCOUNT KEY EXISTS
+# ==========================================
+# Unlike the old GCP VM, the Oracle VM has no metadata server, so Application
+# Default Credentials are NOT available. GCS and Vertex AI auth now depends on a
+# mounted service-account key file. Fail fast here instead of at runtime.
+GCP_CREDENTIALS_FILE="../gcp-credentials.json"
+if [ ! -f "$GCP_CREDENTIALS_FILE" ]; then
+    echo "❌ Error: GCP service-account key '$GCP_CREDENTIALS_FILE' is missing!"
+    echo "The Oracle VM has no GCP metadata server, so GCS and Vertex AI require a key file."
+    echo "Create a service account with these roles, download a JSON key, and save it as '$GCP_CREDENTIALS_FILE':"
+    echo "  - roles/storage.objectAdmin   (GCS uploads/chunks)"
+    echo "  - roles/aiplatform.user       (Vertex AI / Gemini)"
+    echo "Then lock it down: chmod 600 $GCP_CREDENTIALS_FILE"
+    exit 1
+fi
+echo "✅ GCP service-account key found."
+
+# ==========================================
 # 2. CONVERT CERTS & SETUP SSL
 # ==========================================
 RAW_CERT_DIR="../certs/raw"

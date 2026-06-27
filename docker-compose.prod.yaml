@@ -38,13 +38,13 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Database GUI (Adminer)
+  # Database GUI (Adminer) — bound to loopback only; reach it via SSH tunnel
   db-admin:
     image: adminer:latest
     container_name: db-admin
     restart: always
     ports:
-      - "8085:8080"
+      - "127.0.0.1:8085:8080"
     logging:
       driver: "json-file"
       options:
@@ -90,6 +90,9 @@ services:
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # GCP credentials
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # DB
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
@@ -105,6 +108,7 @@ services:
       - SPRING_KAFKA_PROPERTIES_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
     volumes:
       - ../certs:/etc/kafka/secrets:ro
+      - ../gcp-credentials.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres-db
     logging:
@@ -124,6 +128,9 @@ services:
       # GCP
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # GCP credentials
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
@@ -143,6 +150,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ../certs:/etc/kafka/secrets:ro
+      - ../gcp-credentials.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres-db
     logging:
@@ -164,6 +172,9 @@ services:
       - GCP_PROJECT_ID=${GCP_PROJECT_ID}
       - GCP_LOCATION=${GCP_LOCATION}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      # GCP credentials
+      - GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/credentials.json
+      - SPRING_CLOUD_GCP_CREDENTIALS_LOCATION=file:/etc/gcp/credentials.json
       - APP_JWT_SECRET=${INTERNAL_JWT_SECRET}
       # Database
       - DB_URL=jdbc:postgresql://postgres-db:5432/postgres
@@ -183,6 +194,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ../certs:/etc/kafka/secrets:ro
+      - ../gcp-credentials.json:/etc/gcp/credentials.json:ro
     depends_on:
       - postgres-db
     logging:
