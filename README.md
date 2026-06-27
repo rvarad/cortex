@@ -1,6 +1,6 @@
 # Cortex
 
-**[Live Demo (Temporarily Offline)](https://cortex-media.in)**
+**[Live Demo](https://cortex-media.in)**
 
 A media intelligence platform. Upload video or audio — Cortex automatically chunks it, transcribes the audio (Groq Whisper), analyzes the video (Gemini), generates embeddings, and indexes everything into a searchable vector database. Then search across all your media using natural language.
 
@@ -69,9 +69,10 @@ graph LR
 - **Backend**: Java 21, Spring Boot 3.5, Spring Cloud Gateway, Spring AI, Spring Kafka, Spring gRPC
 - **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS v4, Framer Motion
 - **AI**: Groq (Whisper Large v3), Google Gemini 2.5 Flash (Vision), Gemini Embeddings (768-dim)
-- **Infra**: Docker Compose, Nginx (SWAG), GCS, Cloud SQL, Aiven Kafka (mTLS)
-- **Deployment**: GCP e2-standard-2 VM, manual `deploy.sh`
+- **Infra**: Docker Compose, Nginx (SWAG), self-hosted PostgreSQL (pgvector) + Redis, GCS, Aiven Kafka (mTLS)
+- **Deployment**: Oracle Cloud Ampere (ARM64) VM, manual `deploy.sh`
 
 ## Current Status
 
-- **Infrastructure migration in progress**: Moving from GCP (e2-standard-2) to Oracle Cloud. GCS, Cloud SQL, and Aiven Kafka integrations are being re-evaluated for the new environment.
+- **Live** on Oracle Cloud (Ampere, ARM64) — the GCP → Oracle migration is complete. PostgreSQL and Redis now run as containers on the VM; Google Cloud Storage and Gemini remain on GCP.
+- **Chat feature in progress**: conversational Q&A over your indexed media is under active development.
