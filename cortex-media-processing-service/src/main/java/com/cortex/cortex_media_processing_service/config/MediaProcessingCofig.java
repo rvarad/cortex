@@ -1,5 +1,8 @@
 package com.cortex.cortex_media_processing_service.config;
 
+import java.util.Map;
+
+import org.slf4j.MDC;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -24,6 +27,20 @@ public class MediaProcessingCofig {
         log.error("InterruptedException in mediaProcessingExecutor", e);
         Thread.currentThread().interrupt();
       }
+    });
+    executor.setTaskDecorator(runnable -> {
+      Map<String, String> ctx = MDC.getCopyOfContextMap();
+      return () -> {
+        if (ctx != null)
+          MDC.setContextMap(ctx);
+        else
+          MDC.clear();
+        try {
+          runnable.run();
+        } finally {
+          MDC.clear();
+        }
+      };
     });
     executor.initialize();
     executor.getThreadPoolExecutor().prestartAllCoreThreads();

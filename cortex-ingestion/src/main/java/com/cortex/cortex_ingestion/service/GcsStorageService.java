@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -74,6 +75,7 @@ public class GcsStorageService {
           .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
               .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).userId(userId)
               .build());
+      MDC.put("fileId", fileMetadata.getId().toString());
       log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
@@ -82,6 +84,8 @@ public class GcsStorageService {
     } catch (Exception e) {
       log.error("[GCSService] Error generating presigned URL: {}", e.getMessage());
       throw new RuntimeException("Error generating presigned URL", e);
+    } finally {
+      MDC.remove("fileId");
     }
   }
 
@@ -93,6 +97,8 @@ public class GcsStorageService {
         log.error("[GCSService] File metadata not found for objectName: {}", decodedObjectName);
         return new RuntimeException("File metadata not found for objectName: " + decodedObjectName);
       });
+
+      MDC.put("fileId", fileMetadata.getId().toString());
 
       // Update size if provided (and greater than 0), as the initial metadata might
       // have had 0 or estimated size
@@ -124,6 +130,8 @@ public class GcsStorageService {
     } catch (Exception e) {
       log.error("[GCSService] Error sending file upload success event for objectName: {}", objectName, e);
       throw new RuntimeException("Error sending file upload success event for objectName: " + objectName, e);
+    } finally {
+      MDC.remove("fileId");
     }
   }
 

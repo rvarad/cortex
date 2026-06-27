@@ -12,10 +12,13 @@ RUN mvn package -pl cortex-gateway -am -DskipTests
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
+RUN groupadd --system app && useradd --system --gid app app
 # Copy the fat jar from the build stage
-COPY --from=build /app/cortex-gateway/target/cortex-gateway-0.0.1-SNAPSHOT.jar app.jar
+COPY --from=build --chown=app:app /app/cortex-gateway/target/*.jar app.jar
+
+USER app
 
 # Expose the application port
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]

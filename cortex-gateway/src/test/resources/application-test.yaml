@@ -1,0 +1,21 @@
+app:
+  cors:
+    allowed-origins: http://localhost:3000
+  jwt:
+    secret: test-jwt-secret-not-real-at-least-32-bytes
+    expiration-seconds: 3600
+
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: test-client-id
+            client-secret: test-client-secret
+            scope: openid, profile, email
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
