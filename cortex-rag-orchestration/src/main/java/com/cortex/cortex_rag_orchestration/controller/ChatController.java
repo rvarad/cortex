@@ -3,15 +3,13 @@ package com.cortex.cortex_rag_orchestration.controller;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.cortex.cortex_common.dto.SearchRequestDTO;
-import com.cortex.cortex_common.dto.SearchResultDTO;
-import com.cortex.cortex_rag_orchestration.service.SearchService;
+import com.cortex.cortex_common.dto.ChatAnswerDTO;
+import com.cortex.cortex_common.dto.ChatQuestionDTO;
+import com.cortex.cortex_rag_orchestration.service.ChatService;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
-import java.util.List;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -19,21 +17,22 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
 @Slf4j
-@RequiredArgsConstructor
 @RestController
-@RequestMapping("/api/v1/search")
-public class SearchController {
+@RequiredArgsConstructor
+@RequestMapping("/api/v1/chat")
+public class ChatController {
 
-  private final SearchService searchService;
+  private final ChatService chatService;
 
-  @PostMapping
-  public ResponseEntity<List<SearchResultDTO>> search(@Valid @RequestBody SearchRequestDTO request,
+  @PostMapping()
+  public ResponseEntity<ChatAnswerDTO> chat(@Valid @RequestBody ChatQuestionDTO question,
       Authentication authentication) {
 
     String userId = authentication.getName();
-    List<SearchResultDTO> results = searchService.search(request, userId);
 
-    return ResponseEntity.ok(results);
+    ChatAnswerDTO answer = chatService.generateAnswer(question, userId);
+
+    return ResponseEntity.ok(answer);
   }
 
 }
