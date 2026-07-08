@@ -25,7 +25,7 @@ spring:
             - id: chat
               uri: http://${RAG_HOST:localhost}:8083
               predicates:
-                - Path=/api/v1/chat/**
+                - Path=/api/v1/chats/**
 
   grpc:
     client:

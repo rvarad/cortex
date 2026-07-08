@@ -1,23 +1,24 @@
 package com.cortex.cortex_rag_orchestration.service;
 
-import java.util.List;
-import java.util.Map;
-
-import org.springframework.stereotype.Service;
-
 import com.cortex.cortex_common.dto.AnswerSegmentDTO;
+import com.cortex.cortex_rag_orchestration.util.SegmentParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.RateLimiter;
 import com.google.genai.Client;
+import com.google.genai.ResponseStream;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
-
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
 
 @Slf4j
 @Service
@@ -38,9 +39,12 @@ public class VertexAnswerGenerator implements AnswerGenerator {
           .type(Type.Known.OBJECT)
           .properties(Map.of(
               "text", Schema.builder().type(Type.Known.STRING).build(),
-              "cites", Schema.builder()
+              "cites",
+              Schema.builder()
                   .type(Type.Known.ARRAY)
-                  .items(Schema.builder().type(Type.Known.INTEGER).build())
+                  .items(Schema.builder()
+                      .type(Type.Known.INTEGER)
+                      .build())
                   .build()))
           .required(List.of("text", "cites"))
           .build())
@@ -65,6 +69,33 @@ public class VertexAnswerGenerator implements AnswerGenerator {
     } catch (Exception e) {
       log.error("Error generating answer for prompt: {}", prompt, e);
       throw new RuntimeException("Error generating answer for prompt: " + prompt, e);
+    }
+  }
+
+  @Override
+  public void generateAnswerStream(String prompt, Consumer<AnswerSegmentDTO> onSegmentComplete) {
+    try {
+      inferenceRateLimiter.acquire();
+
+      GenerateContentConfig config = GenerateContentConfig.builder()
+          .responseMimeType("application/json")
+          .responseSchema(RESPONSE_SCHEMA)
+          .build();
+
+      SegmentParser parser = new SegmentParser(objectMapper, onSegmentComplete);
+
+      try (ResponseStream<GenerateContentResponse> stream = genAiClient.models.generateContentStream(
+          MODEL_NAME, Content.fromParts(Part.fromText(prompt)), config)) {
+        for (GenerateContentResponse chunk : stream) {
+          String piece = chunk.text();
+          if (piece != null) {
+            parser.feed(piece);
+          }
+        }
+      }
+    } catch (Exception e) {
+      log.error("Error streaming answer for prompt: {}", prompt);
+      throw new RuntimeException("Error streaming answer for prompt: " + prompt, e);
     }
   }
 }

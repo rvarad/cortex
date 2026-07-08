@@ -3,21 +3,25 @@ package com.cortex.cortex_rag_orchestration.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
-
-import java.util.List;
-import java.util.UUID;
-
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.cortex.cortex_common.dto.ChatAnswerDTO;
 import com.cortex.cortex_common.dto.ChatQuestionDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
+import java.util.List;
+import java.util.UUID;
+import java.util.function.Consumer;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * Pure unit test for ChatService. No Spring, no database, no embeddings, no
@@ -57,14 +61,13 @@ class ChatServiceTest {
         .score(0.95)
         .build();
 
-    ChatQuestionDTO question = ChatQuestionDTO.builder()
-        .question("how do I set up docker?")
-        .build();
+    ChatQuestionDTO question = ChatQuestionDTO.builder().question("how do I set up docker?").build();
 
     // Program the fake retriever: for any request, hand back our one canned chunk.
     when(searchService.search(any(), any())).thenReturn(List.of(chunk));
 
-    // Program the fake LLM to return a canned structured answer (one cited segment).
+    // Program the fake LLM to return a canned structured answer (one cited
+    // segment).
     // The generator's own JSON/schema behaviour is tested elsewhere; here we only
     // care that ChatService passes these segments straight through.
     AnswerSegmentDTO segment = AnswerSegmentDTO.builder()
@@ -83,7 +86,8 @@ class ChatServiceTest {
     // Sources pass straight through too (seeds G.2 citations).
     assertThat(result.getSources()).containsExactly(chunk);
 
-    // Now prove ChatService built the prompt correctly by CAPTURING what it actually
+    // Now prove ChatService built the prompt correctly by CAPTURING what it
+    // actually
     // sent the LLM — the generator is a fake, so the only place this logic is
     // observable is the argument it received.
     ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
@@ -141,9 +145,7 @@ class ChatServiceTest {
         .fileDisplayName("b.mp4")
         .build();
 
-    ChatQuestionDTO question = ChatQuestionDTO.builder()
-        .question("how do I set up docker?")
-        .build();
+    ChatQuestionDTO question = ChatQuestionDTO.builder().question("how do I set up docker?").build();
 
     when(searchService.search(any(), any())).thenReturn(List.of(source1, source2));
 
@@ -164,5 +166,93 @@ class ChatServiceTest {
     assertThat(result.getAnswer().get(0).getCites()).containsExactly(1, 2);
     // We drop bad citations, never the segment's content.
     assertThat(result.getAnswer().get(0).getText()).isEqualTo("Grounded claim about docker.");
+  }
+
+  @Test
+  void stream_sendsSourcesFirst_thenOneSanitizedSegmentPerCallback() {
+    // ---- Arrange ----
+    // Two sources => valid citation range is [1, 2].
+    SearchResultDTO source1 = SearchResultDTO.builder().id(UUID.randomUUID()).fileDisplayName("a.mp4").build();
+    SearchResultDTO source2 = SearchResultDTO.builder().id(UUID.randomUUID()).fileDisplayName("b.mp4").build();
+    List<SearchResultDTO> sources = List.of(source1, source2);
+
+    ChatQuestionDTO question = ChatQuestionDTO.builder().question("how do I set up docker?").build();
+    when(searchService.search(any(), any())).thenReturn(sources);
+
+    // Fake the streaming generator: instead of calling a real LLM, drive the
+    // callback ourselves with two canned segments. The second cites 9 — out of
+    // range — so we can prove ChatService sanitizes each segment as it streams.
+    AnswerSegmentDTO seg1 = AnswerSegmentDTO.builder().text("Docker uses namespaces.").cites(List.of(1)).build();
+    AnswerSegmentDTO seg2 = AnswerSegmentDTO.builder().text(" and cgroups.").cites(List.of(2, 9)).build();
+    doAnswer(invocation -> {
+      Consumer<AnswerSegmentDTO> callback = invocation.getArgument(1);
+      callback.accept(seg1);
+      callback.accept(seg2);
+      return null;
+    }).when(answerGenerator).generateAnswerStream(anyString(), any());
+
+    SseEmitter emitter = mock(SseEmitter.class);
+
+    // ---- Act ----
+    chatService.streamAnswer(question, "user-1", emitter);
+
+    // ---- Assert ----
+    // Three events, in order: sources, then a segment per callback.
+    ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+    try {
+      verify(emitter, times(3)).send(captor.capture());
+    } catch (Exception e) {
+      throw new RuntimeException(e); // SseEmitter.send declares IOException; never thrown by a mock
+    }
+    List<SseEmitter.SseEventBuilder> events = captor.getAllValues();
+
+    // 1st event: the full source list, up front, so the UI can resolve citations.
+    assertThat(payloadOf(events.get(0))).isEqualTo(sources);
+
+    // 2nd + 3rd events: the two segments, each sanitized.
+    AnswerSegmentDTO streamed1 = (AnswerSegmentDTO) payloadOf(events.get(1));
+    assertThat(streamed1.getText()).isEqualTo("Docker uses namespaces.");
+    assertThat(streamed1.getCites()).containsExactly(1);
+
+    AnswerSegmentDTO streamed2 = (AnswerSegmentDTO) payloadOf(events.get(2));
+    assertThat(streamed2.getText()).isEqualTo(" and cgroups.");
+    assertThat(streamed2.getCites()).containsExactly(2); // the out-of-range 9 was dropped
+  }
+
+  @Test
+  void stream_emptyRetrieval_sendsDontKnow_andNeverOpensTheStream() {
+    // ---- Arrange ----
+    ChatQuestionDTO question = ChatQuestionDTO.builder().question("what is the meaning of life?").build();
+    when(searchService.search(any(), any())).thenReturn(List.of());
+
+    SseEmitter emitter = mock(SseEmitter.class);
+
+    // ---- Act ----
+    chatService.streamAnswer(question, "user-1", emitter);
+
+    // ---- Assert ----
+    // Exactly one event (the "don't know" segment); no "sources" event.
+    ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+    try {
+      verify(emitter, times(1)).send(captor.capture());
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+    AnswerSegmentDTO fallback = (AnswerSegmentDTO) payloadOf(captor.getValue());
+    assertThat(fallback.getText()).contains("don't know");
+
+    // The core guarantee: empty context => the LLM stream is never opened.
+    verify(answerGenerator, never()).generateAnswerStream(anyString(), any());
+  }
+
+  // Pulls the data object out of an SSE event, skipping the "event:...\n" framing
+  // strings that .name() adds. Our payloads are always a List or an AnswerSegmentDTO.
+  private static Object payloadOf(SseEmitter.SseEventBuilder builder) {
+    for (ResponseBodyEmitter.DataWithMediaType d : builder.build()) {
+      if (!(d.getData() instanceof String)) {
+        return d.getData();
+      }
+    }
+    return null;
   }
 }

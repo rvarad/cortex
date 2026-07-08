@@ -2,6 +2,7 @@ package com.cortex.cortex_rag_orchestration.controller;
 
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.cortex.cortex_common.dto.ChatAnswerDTO;
 import com.cortex.cortex_common.dto.ChatQuestionDTO;
@@ -11,6 +12,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,7 +21,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 @Slf4j
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/v1/chat")
+@RequestMapping("/api/v1/chats")
 public class ChatController {
 
   private final ChatService chatService;
@@ -33,6 +35,23 @@ public class ChatController {
     ChatAnswerDTO answer = chatService.generateAnswer(question, userId);
 
     return ResponseEntity.ok(answer);
+  }
+
+  @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter streamChat(@Valid @RequestBody ChatQuestionDTO question, Authentication authentication) {
+    String userId = authentication.getName();
+    SseEmitter emitter = new SseEmitter(60_000L); // 60 seconds timeout
+
+    Thread.startVirtualThread(() -> {
+      try {
+        chatService.streamAnswer(question, userId, emitter);
+        emitter.complete();
+      } catch (Exception e) {
+        emitter.completeWithError(e);
+      }
+    });
+
+    return emitter;
   }
 
 }
