@@ -5,3 +5,5 @@
 .dockerignore
 Dockerfile
 docker-compose.yaml
+swag_config/
+.env
