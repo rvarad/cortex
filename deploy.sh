@@ -86,8 +86,8 @@ openssl pkcs12 -export -in "$RAW_CERT_DIR/service.cert" -inkey "$RAW_CERT_DIR/se
 keytool -importkeystore -deststorepass changeit -destkeypass changeit -destkeystore "$OUTPUT_CERT_DIR/keystore.jks" \
     -srckeystore "$OUTPUT_CERT_DIR/keystore.p12" -srcstoretype PKCS12 -srcstorepass changeit -alias service
 
-# Cleanup raw keys
-rm certs/service.key certs/service.cert certs/keystore.p12
+# Cleanup temporary PKCS12 file (keep raw certificates in certs/raw/ for future deployments)
+rm -f "$OUTPUT_CERT_DIR/keystore.p12"
 
 # ==========================================
 # 2. GENERATE .env FILE
