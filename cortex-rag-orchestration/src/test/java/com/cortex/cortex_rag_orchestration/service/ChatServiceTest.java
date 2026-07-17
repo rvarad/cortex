@@ -15,6 +15,7 @@ import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.cortex.cortex_common.dto.ChatAnswerDTO;
 import com.cortex.cortex_common.dto.ChatQuestionDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
+import com.cortex.cortex_common.dto.SourceRefDTO;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -169,25 +170,37 @@ class ChatServiceTest {
   }
 
   @Test
-  void stream_sendsSourcesFirst_thenOneSanitizedSegmentPerCallback() {
+  void stream_emitsEachCitedSourceExactlyOnce_immediatelyBeforeTheSegmentThatCitesIt() {
     // ---- Arrange ----
-    // Two sources => valid citation range is [1, 2].
-    SearchResultDTO source1 = SearchResultDTO.builder().id(UUID.randomUUID()).fileDisplayName("a.mp4").build();
-    SearchResultDTO source2 = SearchResultDTO.builder().id(UUID.randomUUID()).fileDisplayName("b.mp4").build();
-    List<SearchResultDTO> sources = List.of(source1, source2);
+    // Two sources => valid citation range is [1, 2]. The transcripts are here on
+    // purpose: they must NEVER reach the wire (that's the whole point of SourceRefDTO).
+    UUID fileId = UUID.randomUUID();
+    SearchResultDTO source1 = SearchResultDTO.builder()
+        .id(UUID.randomUUID()).fileId(fileId).fileDisplayName("docker-talk.mp4")
+        .chunkIndex(0).startTime(0.0).endTime(60.0)
+        .transcript("a long transcript that must not be shipped to the browser")
+        .build();
+    SearchResultDTO source2 = SearchResultDTO.builder()
+        .id(UUID.randomUUID()).fileId(fileId).fileDisplayName("docker-talk.mp4")
+        .chunkIndex(1).startTime(60.0).endTime(120.0)
+        .transcript("another long transcript")
+        .build();
 
     ChatQuestionDTO question = ChatQuestionDTO.builder().question("how do I set up docker?").build();
-    when(searchService.search(any(), any())).thenReturn(sources);
+    when(searchService.search(any(), any())).thenReturn(List.of(source1, source2));
 
-    // Fake the streaming generator: instead of calling a real LLM, drive the
-    // callback ourselves with two canned segments. The second cites 9 — out of
-    // range — so we can prove ChatService sanitizes each segment as it streams.
+    // Drive the streaming callback ourselves with three canned segments:
+    // seg1 cites 1 -> source 1 is new, must be emitted.
+    // seg2 cites 2 and 9 -> 9 is out of range (scrubbed); source 2 is new.
+    // seg3 re-cites 1 -> already sent, must NOT be emitted again.
     AnswerSegmentDTO seg1 = AnswerSegmentDTO.builder().text("Docker uses namespaces.").cites(List.of(1)).build();
     AnswerSegmentDTO seg2 = AnswerSegmentDTO.builder().text(" and cgroups.").cites(List.of(2, 9)).build();
+    AnswerSegmentDTO seg3 = AnswerSegmentDTO.builder().text(" Both are kernel features.").cites(List.of(1)).build();
     doAnswer(invocation -> {
       Consumer<AnswerSegmentDTO> callback = invocation.getArgument(1);
       callback.accept(seg1);
       callback.accept(seg2);
+      callback.accept(seg3);
       return null;
     }).when(answerGenerator).generateAnswerStream(anyString(), any());
 
@@ -197,26 +210,40 @@ class ChatServiceTest {
     chatService.streamAnswer(question, "user-1", emitter);
 
     // ---- Assert ----
-    // Three events, in order: sources, then a segment per callback.
+    // Exactly 5 events: source(1), segment, source(2), segment, segment.
+    // Critically NOT an upfront "sources" blob — that's what lazy emission removed.
     ArgumentCaptor<SseEmitter.SseEventBuilder> captor = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
     try {
-      verify(emitter, times(3)).send(captor.capture());
+      verify(emitter, times(5)).send(captor.capture());
     } catch (Exception e) {
-      throw new RuntimeException(e); // SseEmitter.send declares IOException; never thrown by a mock
+      throw new RuntimeException(e); // send() declares IOException; a mock never throws it
     }
-    List<SseEmitter.SseEventBuilder> events = captor.getAllValues();
+    List<Object> payloads = captor.getAllValues().stream().map(ChatServiceTest::payloadOf).toList();
 
-    // 1st event: the full source list, up front, so the UI can resolve citations.
-    assertThat(payloadOf(events.get(0))).isEqualTo(sources);
+    // Event 0: source 1 — emitted BEFORE the segment citing it (the one ordering rule).
+    SourceRefDTO ref1 = (SourceRefDTO) payloads.get(0);
+    assertThat(ref1.getSourceNo()).isEqualTo(1);
+    assertThat(ref1.getFileId()).isEqualTo(fileId);
+    assertThat(ref1.getFileDisplayName()).isEqualTo("docker-talk.mp4");
+    assertThat(ref1.getStartTime()).isEqualTo(0.0);
+    assertThat(ref1.getChunkIndex()).isEqualTo(0);
 
-    // 2nd + 3rd events: the two segments, each sanitized.
-    AnswerSegmentDTO streamed1 = (AnswerSegmentDTO) payloadOf(events.get(1));
-    assertThat(streamed1.getText()).isEqualTo("Docker uses namespaces.");
-    assertThat(streamed1.getCites()).containsExactly(1);
+    // Event 1: the segment that cites it.
+    assertThat(((AnswerSegmentDTO) payloads.get(1)).getCites()).containsExactly(1);
 
-    AnswerSegmentDTO streamed2 = (AnswerSegmentDTO) payloadOf(events.get(2));
-    assertThat(streamed2.getText()).isEqualTo(" and cgroups.");
-    assertThat(streamed2.getCites()).containsExactly(2); // the out-of-range 9 was dropped
+    // Event 2: source 2 — again, before its segment.
+    SourceRefDTO ref2 = (SourceRefDTO) payloads.get(2);
+    assertThat(ref2.getSourceNo()).isEqualTo(2);
+    assertThat(ref2.getStartTime()).isEqualTo(60.0);
+
+    // Event 3: the out-of-range 9 was scrubbed; only 2 survives.
+    assertThat(((AnswerSegmentDTO) payloads.get(3)).getCites()).containsExactly(2);
+
+    // Event 4: seg3 re-cites source 1 -> segment only, NO duplicate source event.
+    assertThat(((AnswerSegmentDTO) payloads.get(4)).getCites()).containsExactly(1);
+
+    // Only the 2 cited sources were ever emitted (dedup held).
+    assertThat(payloads).filteredOn(p -> p instanceof SourceRefDTO).hasSize(2);
   }
 
   @Test

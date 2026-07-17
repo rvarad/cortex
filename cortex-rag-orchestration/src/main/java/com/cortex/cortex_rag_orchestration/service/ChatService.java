@@ -5,10 +5,13 @@ import com.cortex.cortex_common.dto.ChatAnswerDTO;
 import com.cortex.cortex_common.dto.ChatQuestionDTO;
 import com.cortex.cortex_common.dto.SearchRequestDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
+import com.cortex.cortex_common.dto.SourceRefDTO;
 
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +28,12 @@ public class ChatService {
   private final AnswerGenerator answerGenerator;
 
   private final String PROMPT = "You are Cortex, an assistant that answers questions about a user's media library. Answer the question using ONLY the information in the context below. If the answer is not in the context, say you don't know — do not use outside knowledge. Answer according to the schema provided. Break the answer into coherent segments, put the supporting \"Source no.\" integer/s in each segments \"cites\" (empty if none). Context: %s. Question: %s";
+
+  private List<SearchResultDTO> resolveContext(SearchRequestDTO request, String userId) {
+    return request.getFileId() != null
+        ? searchService.getFileContext(request, userId)
+        : searchService.search(request, userId);
+  }
 
   private String contextAssembler(List<SearchResultDTO> searchResults) {
     StringBuilder context = new StringBuilder();
@@ -89,7 +98,7 @@ public class ChatService {
           .fileId(question.getFileId())
           .build();
 
-      List<SearchResultDTO> searchResults = searchService.search(request, userId);
+      List<SearchResultDTO> searchResults = resolveContext(request, userId);
 
       if (searchResults.isEmpty()) {
         return ChatAnswerDTO.builder()
@@ -125,7 +134,7 @@ public class ChatService {
           .fileId(question.getFileId())
           .build();
 
-      List<SearchResultDTO> searchResults = searchService.search(request, userId);
+      List<SearchResultDTO> searchResults = resolveContext(request, userId);
 
       if (searchResults.isEmpty()) {
         sendAnswer(emitter, "segment",
@@ -133,18 +142,30 @@ public class ChatService {
         return;
       }
 
-      sendAnswer(emitter, "sources", searchResults);
-
       String context = contextAssembler(searchResults);
 
       String prompt = String.format(
           PROMPT,
           context, request.getQuery());
 
+      Set<Integer> sent = new HashSet<>();
+
       answerGenerator.generateAnswerStream(
           prompt,
           segment -> {
             AnswerSegmentDTO sanitizedSegment = sanitizeCites(segment, searchResults.size());
+
+            for (Integer cite : sanitizedSegment.getCites()) {
+              if (sent.add(cite)) {
+                SearchResultDTO result = searchResults.get(cite - 1);
+                sendAnswer(emitter,
+                    "source",
+                    SourceRefDTO.builder().sourceNo(cite).startTime(result.getStartTime()).endTime(result.getEndTime())
+                        .fileId(result.getFileId()).fileDisplayName(result.getFileDisplayName())
+                        .chunkIndex(result.getChunkIndex()).build());
+              }
+            }
+
             sendAnswer(
                 emitter,
                 "segment",
