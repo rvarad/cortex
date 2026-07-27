@@ -1,6 +1,6 @@
 # Cortex
 
-**[Live Demo](https://cortex-media.in)**
+**Live Demo: [cortex-media.in](https://cortex-media.in)**
 
 A media intelligence platform. Upload video or audio — Cortex automatically chunks it, transcribes the audio (Groq Whisper), analyzes the video (Gemini), generates embeddings, and indexes everything into a searchable vector database. Then search across all your media using natural language.
 
@@ -53,16 +53,16 @@ graph LR
 
 ## Components
 
-| Service | Tech | Role |
-|---|---|---|
-| **Frontend** | Next.js 16, React 19, Tailwind, shadcn | UI — file management, pipeline timeline (SSE), search |
-| **API Gateway** | Spring Cloud Gateway, Redis, gRPC Client | OAuth2 (Google), session management, JWT relay, routing, user sync |
-| **Ingestion** | Spring Boot, Kafka, GCS, gRPC Server | File metadata CRUD, user management, webhooks, SSE broadcast, pipeline event tracking |
-| **Media Processing** | Spring Boot, FFmpeg, Kafka | Streams media from GCS, chunks with FFmpeg, uploads chunks back to GCS |
-| **RAG Orchestration** | Spring Boot, Gemini, Groq, Spring AI | Vision analysis, transcription, embedding generation, hybrid search |
-| **PostgreSQL** | pgvector | Stores users, file metadata, media chunks, embeddings, pipeline events |
-| **Kafka** | Apache Kafka | Async event bus between services |
-| **Redis** | Redis 8 | Gateway session store |
+| Service               | Tech                                     | Role                                                                                  |
+| --------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Frontend**          | Next.js 16, React 19, Tailwind, shadcn   | UI — file management, pipeline timeline (SSE), search                                 |
+| **API Gateway**       | Spring Cloud Gateway, Redis, gRPC Client | OAuth2 (Google), session management, JWT relay, routing, user sync                    |
+| **Ingestion**         | Spring Boot, Kafka, GCS, gRPC Server     | File metadata CRUD, user management, webhooks, SSE broadcast, pipeline event tracking |
+| **Media Processing**  | Spring Boot, FFmpeg, Kafka               | Streams media from GCS, chunks with FFmpeg, uploads chunks back to GCS                |
+| **RAG Orchestration** | Spring Boot, Gemini, Groq, Spring AI     | Vision analysis, transcription, embedding generation, hybrid search                   |
+| **PostgreSQL**        | pgvector                                 | Stores users, file metadata, media chunks, embeddings, pipeline events                |
+| **Kafka**             | Apache Kafka                             | Async event bus between services                                                      |
+| **Redis**             | Redis 8                                  | Gateway session store                                                                 |
 
 ## Stack
 
