@@ -14,6 +14,8 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -39,6 +41,9 @@ import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
 import com.cortex.cortex_media_processing_service.service.processing.MediaProcessingContext;
 import com.cortex.cortex_media_processing_service.service.processing.UploadStatus;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import static com.cortex.cortex_common.utils.MdcUtils.withMDC;
 
 import lombok.RequiredArgsConstructor;
@@ -57,17 +62,21 @@ public class MediaProcessingService {
 
   private final KafkaTemplate<String, Object> kafkaTemplate;
 
+  private final ObjectMapper objectMapper;
+
   @Value("${app.kafka.topic.pipeline-events}")
   private String pipelineEventsTopic;
-
-  // private final TranscriptionService transcriptionService;
 
   private static final int MAX_CONCURRENT_UPLOADS = 5;
 
   private static final int AUDIO_CHUNK_DURATION_S = 60;
   private static final int FFMPEG_PROCESSING_TIMEOUT_M = 30;
 
+  private static final double SILENCE_FLOOR_DB = -50.0;
+
   private static final String TEMP_DIRECTORY = "/tmp/media-processing-service-chunks";
+
+  private static final Pattern MAX_VOLUME = Pattern.compile("max_volume:\\s*(-?[\\d.]+)");
 
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
 
@@ -112,7 +121,8 @@ public class MediaProcessingService {
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
       kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
 
-      Process ffmpegProcess = startFFmpegProcess(streamUrl, videoPattern, audioPattern);
+      Process ffmpegProcess = startFFmpegProcess(streamUrl, videoPattern, audioPattern,
+          processContext.getManifestDTO());
 
       Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(ffmpegProcess)));
 
@@ -135,6 +145,10 @@ public class MediaProcessingService {
       FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
 
       if (fileMetadata != null) {
+        fileMetadata.setDurationSeconds(manifestDTO.getDuration_s());
+        fileMetadata.setHasVideo(manifestDTO.isHasVideo());
+        fileMetadata.setHasAudio(manifestDTO.isHasAudio());
+        fileMetadata.setVideoCodec(manifestDTO.getVideoCodec());
         fileMetadata.setTotalChunks(totalChunksCount);
         fileMetadata.setFileStatus(FileStatusEnum.CHUNKED);
         fileMetadataRepository.save(fileMetadata);
@@ -161,43 +175,77 @@ public class MediaProcessingService {
     }
   }
 
+  private boolean isAudioSilent(String streamUrl) {
+
+    log.info("Checking if audio is silent: {}", streamUrl);
+    Double maxVolume = null;
+
+    try {
+      ProcessBuilder processBuilder = new ProcessBuilder("ffmpeg", "-hide_banner", "-nostats",
+          "-i", streamUrl, "-vn", "-af", "volumedetect", "-f", "null", "-");
+
+      Process process = processBuilder.start();
+
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+          Matcher matcher = MAX_VOLUME.matcher(line);
+          if (matcher.find()) {
+            maxVolume = Double.parseDouble(matcher.group(1));
+          }
+        }
+      }
+      process.waitFor();
+
+      if (maxVolume == null)
+        return false;
+
+      return maxVolume < SILENCE_FLOOR_DB;
+    } catch (Exception e) {
+      log.error("Error checking if audio is silent", e);
+      return false;
+    }
+  }
+
   private MediaFileManifestDTO probeMediaFile(String streamUrl) {
     log.info("Probing media file: {}", streamUrl);
 
     try {
-      ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error",
-          "-show_entries", "format=duration:stream=codec_type",
-          "-of", "csv=p=0",
+      ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
+          "-show_format", "-show_streams",
           streamUrl);
-      processBuilder.redirectErrorStream(true);
 
       Process process = processBuilder.start();
 
       boolean video = false;
       boolean audio = false;
 
+      boolean audioStreamExists = false;
+      JsonNode realVideoStream = null;
+
       double duration_s = 0.0;
 
-      try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-        String line;
-        while ((line = reader.readLine()) != null) {
-          line = line.trim();
-          if (line.isEmpty())
-            continue;
+      try {
+        JsonNode root = objectMapper.readTree(process.getInputStream());
 
-          log.info("FFprobe output: {}", line);
-          if (line.contains("video")) {
-            video = true;
-          } else if (line.contains("audio")) {
-            audio = true;
-          } else {
-            try {
-              duration_s = Double.parseDouble(line);
-            } catch (NumberFormatException e) {
-              log.warn("Unknown ffprobe output: {}", line);
-            }
+        duration_s = root.path("format").path("duration").asDouble(0.0);
+
+        for (JsonNode stream : root.path("streams")) {
+          String codecType = stream.path("codec_type").asText();
+
+          if (codecType.equals("audio")) {
+            audioStreamExists = true;
+          } else if (codecType.equals("video")) {
+            int attachedPic = stream.path("disposition").path("attached_pic").asInt(0);
+            if (attachedPic != 1)
+              realVideoStream = stream;
           }
         }
+
+        audio = audioStreamExists && !isAudioSilent(streamUrl);
+        video = realVideoStream != null;
+
+        String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
 
         int exitCode = process.waitFor();
         if (exitCode != 0) {
@@ -207,7 +255,8 @@ public class MediaProcessingService {
 
         log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
 
-        return new MediaFileManifestDTO(video, audio, duration_s);
+        return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
+            .videoCodec(videoCodec).build();
       } catch (Exception e) {
         log.error("FFprobe process failed", e);
         throw new RuntimeException("FFprobe process failed", e);
@@ -219,34 +268,37 @@ public class MediaProcessingService {
     }
   }
 
-  private Process startFFmpegProcess(String streamUrl, String videoPattern, String audioPattern) throws Exception {
-    String[] command = {
-        "ffmpeg",
-        "-hide_banner",
-        "-y",
-        "-i", streamUrl, // Streaming input from Presigned URL
+  private Process startFFmpegProcess(String streamUrl, String videoPattern, String audioPattern,
+      MediaFileManifestDTO manifest) throws Exception {
 
-        // --- VIDEO CHUNKS (For Gemini) ---
-        "-map", "0:v?", // Keep Video + Audio for Gemini context
-        "-map", "0:a?", // Keep Video + Audio for Gemini context
-        "-c", "copy", // Hardcoded 'copy': Instant splitting, 0% CPU
-        "-f", "segment",
-        "-segment_time", String.valueOf(AUDIO_CHUNK_DURATION_S), // Hardcoded 60s: Optimal for Gemini's context window
-        "-reset_timestamps", "1",
-        videoPattern,
+    log.info("Starting FFmpeg process for media file: {}", streamUrl);
 
-        // --- AUDIO CHUNKS (For Groq/Whisper) ---
-        "-map", "0:a?", // Extract Audio only
-        "-c:a", "pcm_s16le", // Hardcoded WAV: Lossless, no CPU usage, best for Groq
-        "-f", "segment",
-        "-segment_time", String.valueOf(AUDIO_CHUNK_DURATION_S), // Must match video duration exactly
-        "-reset_timestamps", "1",
-        audioPattern
-    };
+    List<String> commandList = new ArrayList<>(List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl));
 
-    log.info("Starting FFmpeg with command: {}", String.join(" ", command));
+    if (manifest.isHasVideo()) {
+      commandList.addAll(List.of(
+          "-map", "0:v:0",
+          "-map", "0:a:0?",
+          "-c", "copy",
+          "-f", "segment",
+          "-segment_time", String.valueOf(AUDIO_CHUNK_DURATION_S),
+          "-reset_timestamps", "1",
+          videoPattern));
+    }
 
-    ProcessBuilder processBuilder = new ProcessBuilder(command);
+    if (manifest.isHasAudio()) {
+      commandList.addAll(List.of(
+          "-map", "0:a:0",
+          "-c:a", "pcm_s16le",
+          "-f", "segment",
+          "-segment_time", String.valueOf(AUDIO_CHUNK_DURATION_S),
+          "-reset_timestamps", "1",
+          audioPattern));
+    }
+
+    log.info("Starting FFmpeg with command: {}", String.join(" ", commandList));
+
+    ProcessBuilder processBuilder = new ProcessBuilder(commandList);
     processBuilder.redirectErrorStream(true);
 
     return processBuilder.start();

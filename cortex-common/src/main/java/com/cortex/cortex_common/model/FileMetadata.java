@@ -67,6 +67,18 @@ public class FileMetadata {
   @Column(nullable = false)
   private String contentType;
 
+  @Column
+  private Double durationSeconds;
+
+  @Column
+  private Boolean hasVideo;
+
+  @Column
+  private Boolean hasAudio;
+
+  @Column
+  private String videoCodec;
+
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
 

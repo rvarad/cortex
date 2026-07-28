@@ -33,6 +33,8 @@ public class TranscriptionService {
 
   private final GcsStorageService gcsStorageService;
 
+  private static final double NO_SPEECH_THRESHOLD = 0.6;
+
   private final RateLimiter transcriptionRateLimiter = RateLimiter.create(20.0 / 60.0);
 
   private static final Map<String, String> languageCodeMap = Arrays.stream(Locale.getISOLanguages())
@@ -82,7 +84,14 @@ public class TranscriptionService {
               .body(String.class);
 
           JsonNode rootNode = objectMapper.readTree(jsonOutput);
-          String text = rootNode.path("text").asText();
+
+          StringBuilder sb = new StringBuilder();
+          for (JsonNode segment : rootNode.path("segments")) {
+            if (segment.path("no_speech_prob").asDouble(0.0) > NO_SPEECH_THRESHOLD)
+              continue;
+            sb.append(segment.path("text").asText());
+          }
+          String text = sb.toString().strip();
           String language = toIsoCode(rootNode.path("language").asText());
 
           log.info("Transcription completed for: {}", objectName);
