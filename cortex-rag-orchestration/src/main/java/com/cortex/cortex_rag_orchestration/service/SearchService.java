@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.SearchRequestDTO;
@@ -41,11 +42,15 @@ public class SearchService {
 
   private static final double RRF_K = 60;
 
+  private final int tokenBudget;
+
   public SearchService(@Qualifier("googleGenAiTextEmbedding") EmbeddingModel embeddingModel,
-      MediaChunkRepository mediaChunkRepository, FileMetadataRepository fileMetadataRepository) {
+      MediaChunkRepository mediaChunkRepository, FileMetadataRepository fileMetadataRepository,
+      @Value("${chat.context.token-budget}") int tokenBudget) {
     this.embeddingModel = embeddingModel;
     this.mediaChunkRepository = mediaChunkRepository;
     this.fileMetadataRepository = fileMetadataRepository;
+    this.tokenBudget = tokenBudget;
   }
 
   public List<SearchResultDTO> search(SearchRequestDTO request, String userId) {
@@ -103,6 +108,49 @@ public class SearchService {
 
     return results;
 
+  }
+
+  public List<SearchResultDTO> getFileContext(SearchRequestDTO request, String userId) {
+    if (request.getFileId() == null) {
+      return search(request, userId);
+    }
+
+    List<MediaChunk> chunks = mediaChunkRepository
+        .findByFileIdAndUserIdAndStatusOrderByChunkIndexAsc(request.getFileId(), userId, MediaChunk.Status.COMPLETED);
+
+    if (chunks.isEmpty()) {
+      return List.of();
+    }
+
+    long chars = chunks.stream()
+        .mapToLong(chunk -> length(chunk.getTranscript()) + length(chunk.getVisualSummary()))
+        .sum();
+
+    long approxTokens = chars / 4;
+
+    if (approxTokens > tokenBudget) {
+      log.info("File {} is over the token budget (~{} tokens > {}); falling back to retrieval",
+          request.getFileId(), approxTokens, tokenBudget);
+      return search(request, userId);
+    }
+
+    String displayName = fileMetadataRepository.findById(request.getFileId()).map(FileMetadata::getFileDisplayName)
+        .orElse("Unknown File");
+
+    return chunks.stream().map(chunk -> SearchResultDTO.builder()
+        .id(chunk.getId())
+        .fileId(chunk.getFileId())
+        .fileDisplayName(displayName)
+        .chunkIndex(chunk.getChunkIndex())
+        .startTime(chunk.getStartTime())
+        .endTime(chunk.getEndTime())
+        .transcript(chunk.getTranscript())
+        .visualSummary(chunk.getVisualSummary())
+        .languageCode(chunk.getLanguageCode()).score(0.0).build()).toList();
+  }
+
+  private static int length(String text) {
+    return text == null ? 0 : text.length();
   }
 
   private Map<UUID, Double> calculateRRFScore(List<UUID> semanticIds, List<UUID> lexicalIds) {

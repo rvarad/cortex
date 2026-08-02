@@ -1,6 +1,10 @@
 package com.cortex.cortex_rag_orchestration.service;
 
 import java.io.InputStream;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,7 +33,15 @@ public class TranscriptionService {
 
   private final GcsStorageService gcsStorageService;
 
+  private static final double NO_SPEECH_THRESHOLD = 0.6;
+
   private final RateLimiter transcriptionRateLimiter = RateLimiter.create(20.0 / 60.0);
+
+  private static final Map<String, String> languageCodeMap = Arrays.stream(Locale.getISOLanguages())
+      .collect(Collectors.toMap(
+          code -> Locale.of(code).getDisplayLanguage(Locale.ENGLISH).toLowerCase(),
+          code -> code,
+          (existing, duplicate) -> existing));
 
   public record TranscriptionResult(String transcript, String languageCode) {
   }
@@ -72,8 +84,15 @@ public class TranscriptionService {
               .body(String.class);
 
           JsonNode rootNode = objectMapper.readTree(jsonOutput);
-          String text = rootNode.path("text").asText();
-          String language = rootNode.path("language").asText();
+
+          StringBuilder sb = new StringBuilder();
+          for (JsonNode segment : rootNode.path("segments")) {
+            if (segment.path("no_speech_prob").asDouble(0.0) > NO_SPEECH_THRESHOLD)
+              continue;
+            sb.append(segment.path("text").asText());
+          }
+          String text = sb.toString().strip();
+          String language = toIsoCode(rootNode.path("language").asText());
 
           log.info("Transcription completed for: {}", objectName);
 
@@ -95,5 +114,12 @@ public class TranscriptionService {
     } catch (Exception e) {
       throw new RuntimeException("Failed to transcribe file: " + objectName, e);
     }
+  }
+
+  private String toIsoCode(String language) {
+    if (language == null || language.isBlank())
+      return "en";
+
+    return languageCodeMap.getOrDefault(language, "en");
   }
 }

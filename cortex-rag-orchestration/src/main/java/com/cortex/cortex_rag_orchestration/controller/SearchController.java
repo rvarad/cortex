@@ -7,6 +7,7 @@ import com.cortex.cortex_common.dto.SearchRequestDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
 import com.cortex.cortex_rag_orchestration.service.SearchService;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -26,7 +27,7 @@ public class SearchController {
   private final SearchService searchService;
 
   @PostMapping
-  public ResponseEntity<List<SearchResultDTO>> search(@RequestBody SearchRequestDTO request,
+  public ResponseEntity<List<SearchResultDTO>> search(@Valid @RequestBody SearchRequestDTO request,
       Authentication authentication) {
 
     String userId = authentication.getName();

@@ -12,6 +12,7 @@ public class MediaFileManifestDTO {
   private boolean hasVideo;
   private boolean hasAudio;
   private double duration_s;
+  private String videoCodec;
 
   public boolean isCorrupted() {
     return !hasVideo && !hasAudio;

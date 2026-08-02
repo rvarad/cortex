@@ -100,6 +100,7 @@ export default function DashboardPage() {
                   contentType={file.contentType}
                   fileSize={file.fileSize}
                   onMutate={fetchFiles}
+                  isRejected={file.fileStatus === "REJECTED"}
                   showPipelineStatus={
                     file.fileStatus !== "COMPLETED" &&
                     file.fileStatus !== "FAILED"

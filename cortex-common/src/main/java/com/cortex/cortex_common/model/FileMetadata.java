@@ -55,7 +55,7 @@ public class FileMetadata {
 
   @NonNull
   @NotNull(message = "File status cannot be empty")
-  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED'))")
+  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED', 'REJECTED', 'FAILED'))")
   @Enumerated(EnumType.STRING)
   private FileStatusEnum fileStatus;
 
@@ -66,6 +66,18 @@ public class FileMetadata {
   @NotBlank(message = "Content type cannot be empty")
   @Column(nullable = false)
   private String contentType;
+
+  @Column
+  private Double durationSeconds;
+
+  @Column
+  private Boolean hasVideo;
+
+  @Column
+  private Boolean hasAudio;
+
+  @Column
+  private String videoCodec;
 
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
