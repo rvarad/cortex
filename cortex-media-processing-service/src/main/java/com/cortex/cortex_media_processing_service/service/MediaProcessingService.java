@@ -67,6 +67,9 @@ public class MediaProcessingService {
   @Value("${app.kafka.topic.pipeline-events}")
   private String pipelineEventsTopic;
 
+  @Value("${cortex.media.max-duration-seconds}")
+  private double maxDurationInSeconds;
+
   private static final int MAX_CONCURRENT_UPLOADS = 5;
 
   private static final int AUDIO_CHUNK_DURATION_S = 60;
@@ -92,6 +95,35 @@ public class MediaProcessingService {
       if (manifestDTO.isCorrupted()) {
         log.error("Media file is corrupted: {}", objectName);
         throw new RuntimeException("Media file is corrupted: " + objectName);
+      }
+
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElseThrow(() -> {
+        log.error("[GCSService] File metadata not found for objectName: {}", objectName);
+        return new RuntimeException("File metadata not found for objectName: " + objectName);
+      });
+
+      if (manifestDTO.getDuration_s() > maxDurationInSeconds) {
+        gcsStorageService.deleteObject(objectName);
+        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+        fileMetadataRepository.save(fileMetadata);
+        log.info("[MediaProcessingService] File too long: {}", objectName);
+
+        PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
+            .eventType(PipelineEventEnum.UPLOAD_REJECTED)
+            .message("File is too long to be processed. Please upload a file shorter than "
+                + (maxDurationInSeconds / 60) + " minutes. This file with duration of "
+                + Math.round(manifestDTO.getDuration_s() / 60) + " minutes will be deleted.")
+            .metadata(Map.of(
+                "contentType", fileMetadata.getContentType(),
+                "durationInSeconds", manifestDTO.getDuration_s(),
+                "objectName", fileMetadata.getObjectName(),
+                "bucketName", fileMetadata.getBucketName(),
+                "fileStatus", fileMetadata.getFileStatus().toString()))
+            .build();
+
+        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+
+        return;
       }
 
       Path workDir = createWorkingDir(objectName);
@@ -141,8 +173,6 @@ public class MediaProcessingService {
       processContext.getIsRunning().set(false);
 
       int totalChunksCount = processContext.getTotalChunks().get();
-
-      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
 
       if (fileMetadata != null) {
         fileMetadata.setDurationSeconds(manifestDTO.getDuration_s());

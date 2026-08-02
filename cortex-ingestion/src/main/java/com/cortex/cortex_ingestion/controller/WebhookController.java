@@ -36,16 +36,6 @@ public class WebhookController {
     log.info(" - Source: " + source);
     log.info(" - Type: " + type);
 
-    // Extract size safely
-    long size = 0;
-    if (eventPayload != null && eventPayload.containsKey("size")) {
-      try {
-        size = Long.parseLong(eventPayload.get("size").toString());
-      } catch (NumberFormatException e) {
-        log.warn("Failed to parse size from payload: {}", eventPayload.get("size"));
-      }
-    }
-    log.info(" - Size: {} bytes", size);
     log.info(" - Payload: " + eventPayload);
 
     // 1. Support CloudEvents (ce-subject header)
@@ -87,7 +77,7 @@ public class WebhookController {
       }
 
       log.info("Processing file: " + normalizedObjectName);
-      gcsStorageService.handleFileUploadSuccess(normalizedObjectName, size);
+      gcsStorageService.handleFileUploadSuccess(normalizedObjectName);
       return ResponseEntity.ok().build();
     }
 

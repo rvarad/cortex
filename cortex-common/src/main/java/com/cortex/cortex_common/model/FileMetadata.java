@@ -55,7 +55,7 @@ public class FileMetadata {
 
   @NonNull
   @NotNull(message = "File status cannot be empty")
-  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED'))")
+  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED', 'REJECTED', 'FAILED'))")
   @Enumerated(EnumType.STRING)
   private FileStatusEnum fileStatus;
 

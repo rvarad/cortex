@@ -47,7 +47,7 @@ public class FilesController {
 
   @PostMapping("/upload")
   public ResponseEntity<GetPresignedURLResponseDTO> generatePresignedUrl(
-      @RequestBody GetPresignedURLRequestDTO requestBody, Authentication authentication) {
+      @Valid @RequestBody GetPresignedURLRequestDTO requestBody, Authentication authentication) {
     log.info("Received request for presigned url for file: {}", requestBody);
 
     String userId = authentication.getName();

@@ -37,13 +37,24 @@ const PIPELINE_STAGES = [
 
 interface PipelineStatusProps {
   fileId: string;
+  /** Fired with the reason when the stream reports the upload was rejected.
+   *  The card owns the rejection UI, so this component renders nothing then. */
+  onRejected?: (message: string) => void;
 }
 
-export function PipelineStatus({ fileId }: PipelineStatusProps) {
+export function PipelineStatus({ fileId, onRejected }: PipelineStatusProps) {
   const [events, setEvents] = useState<PipelineEvent[]>([]);
   const [isComplete, setIsComplete] = useState(false);
+  const [rejectionMessage, setRejectionMessage] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Held in a ref so an inline parent callback doesn't retrigger the effect
+  // and tear down the SSE connection on every render.
+  const onRejectedRef = useRef(onRejected);
+  useEffect(() => {
+    onRejectedRef.current = onRejected;
+  }, [onRejected]);
 
   useEffect(() => {
     const es = subscribeToPipelineEvents(
@@ -51,8 +62,17 @@ export function PipelineStatus({ fileId }: PipelineStatusProps) {
       (event) => {
         setIsConnected(true);
         setEvents((prev) => [...prev, event]);
+
+        // Terminal events: the server closes its emitter, but EventSource
+        // auto-reconnects unless we close it ourselves.
         if (event.eventType === "PIPELINE_COMPLETE") {
           setIsComplete(true);
+          eventSourceRef.current?.close();
+        } else if (event.eventType === "UPLOAD_REJECTED") {
+          const reason = event.message ?? "This upload was rejected.";
+          setRejectionMessage(reason);
+          eventSourceRef.current?.close();
+          onRejectedRef.current?.(reason);
         }
       },
       () => {
@@ -65,6 +85,8 @@ export function PipelineStatus({ fileId }: PipelineStatusProps) {
     };
   }, [fileId]);
 
+  const isRejected = rejectionMessage !== null;
+
   const reachedEvents = new Set(events.map((e) => e.eventType));
 
   const latestStageIndex = PIPELINE_STAGES.reduce((latest, stage, index) => {
@@ -73,6 +95,12 @@ export function PipelineStatus({ fileId }: PipelineStatusProps) {
   }, -1);
 
   if (events.length === 0 && !isConnected) {
+    return null;
+  }
+
+  // Rejected files never ran a pipeline worth showing — eight greyed-out
+  // stages are noise. The card renders the rejection notice instead.
+  if (isRejected) {
     return null;
   }
 
@@ -129,10 +157,14 @@ export function PipelineStatus({ fileId }: PipelineStatusProps) {
         })}
       </div>
 
-      {events.length > 0 && (
-        <p className="mt-1 truncate text-xs text-muted-foreground/70 italic">
-          {events[events.length - 1].message}
-        </p>
+      {isRejected ? (
+        <p className="mt-1 text-xs text-red-500">{rejectionMessage}</p>
+      ) : (
+        events.length > 0 && (
+          <p className="mt-1 truncate text-xs text-muted-foreground/70 italic">
+            {events[events.length - 1].message}
+          </p>
+        )
       )}
     </div>
   );

@@ -163,6 +163,7 @@ export function subscribeToPipelineEvents(
     "TRANSCRIPTION_COMPLETE",
     "EMBEDDING_COMPLETE",
     "PIPELINE_COMPLETE",
+    "UPLOAD_REJECTED",
   ];
 
   for (const type of eventTypes) {

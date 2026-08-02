@@ -15,6 +15,45 @@ import { getPresignedUrl, uploadToGcs } from "@/lib/api";
 import { formatFileSize } from "@/lib/helpers";
 import { toast } from "sonner";
 
+// These mirror the server-side guardrails (ALLOWED_CONTENT_TYPES,
+// cortex.media.max-file-size-bytes, cortex.media.max-duration-seconds).
+// The server is authoritative — these exist so the user finds out before
+// waiting out a long upload, not as enforcement. Keep them in sync.
+const ACCEPTED_TYPES = ["video/mp4", "video/webm", "audio/mpeg", "audio/wav"];
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+const MAX_DURATION_SECONDS = 900; // 15 minutes
+
+/**
+ * Reads a media file's duration in the browser without uploading it.
+ * Resolves null when the browser can't parse it — in that case we let the
+ * upload through and the server's probe decides.
+ */
+function readDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const element = document.createElement(
+      file.type.startsWith("video/") ? "video" : "audio"
+    );
+    const objectUrl = URL.createObjectURL(file);
+
+    const done = (value: number | null) => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(value);
+    };
+
+    element.preload = "metadata";
+    element.onloadedmetadata = () =>
+      done(Number.isFinite(element.duration) ? element.duration : null);
+    element.onerror = () => done(null);
+    element.src = objectUrl;
+  });
+}
+
+function formatMinutes(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return minutes > 0 ? `${minutes} min ${remainder}s` : `${remainder}s`;
+}
+
 interface FileUploadDialogProps {
   onUploadComplete: () => void;
   onFileUploaded?: (fileId: string) => void;
@@ -29,21 +68,27 @@ export function FileUploadDialog({
   const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
 
-  const acceptedTypes = [
-    "video/mp4",
-    "video/webm",
-    "video/quicktime",
-    "audio/mpeg",
-    "audio/wav",
-    "audio/ogg",
-    "audio/mp4",
-  ];
-
-  const handleFile = (file: File) => {
-    if (!acceptedTypes.includes(file.type)) {
-      toast.error("Unsupported file type. Please upload a video or audio file.");
+  const handleFile = async (file: File) => {
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      toast.error("Unsupported file type. Please upload an MP4, WebM, MP3, or WAV file.");
       return;
     }
+
+    if (file.size > MAX_FILE_BYTES) {
+      toast.error(
+        `File is too large (${formatFileSize(file.size)}). Maximum is ${formatFileSize(MAX_FILE_BYTES)}.`
+      );
+      return;
+    }
+
+    const duration = await readDuration(file);
+    if (duration !== null && duration > MAX_DURATION_SECONDS) {
+      toast.error(
+        `File is too long (${formatMinutes(duration)}). Maximum is ${formatMinutes(MAX_DURATION_SECONDS)}.`
+      );
+      return;
+    }
+
     setSelectedFile(file);
   };
 
@@ -128,7 +173,7 @@ export function FileUploadDialog({
             </p>
             <input
               type="file"
-              accept="video/*,audio/*"
+              accept=".mp4,.webm,.mp3,.wav,video/mp4,video/webm,audio/mpeg,audio/wav"
               className="absolute inset-0 cursor-pointer opacity-0"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -138,12 +183,16 @@ export function FileUploadDialog({
             />
             <div className="flex gap-2">
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <FileVideo className="h-3 w-3" /> Video
+                <FileVideo className="h-3 w-3" /> MP4, WebM
               </span>
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <FileAudio className="h-3 w-3" /> Audio
+                <FileAudio className="h-3 w-3" /> MP3, WAV
               </span>
             </div>
+            <p className="mt-3 text-xs text-muted-foreground/60">
+              Up to {formatFileSize(MAX_FILE_BYTES)} and{" "}
+              {Math.floor(MAX_DURATION_SECONDS / 60)} minutes
+            </p>
           </div>
         ) : (
           <div className="space-y-4">

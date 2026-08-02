@@ -8,5 +8,7 @@ public enum FileStatusEnum {
   UPLOADED,
   CHUNKED,
   PROCESSING,
-  COMPLETED
+  COMPLETED,
+  REJECTED,
+  FAILED
 }

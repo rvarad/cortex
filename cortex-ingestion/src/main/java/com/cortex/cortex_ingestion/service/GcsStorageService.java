@@ -5,13 +5,16 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
@@ -44,9 +47,19 @@ public class GcsStorageService {
   @Value("${gcs.bucket}")
   private String bucketName;
 
+  @Value("${cortex.media.max-file-size-bytes}")
+  private Long maxFileBytes;
+
+  private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("video/mp4", "video/webm", "audio/wav", "audio/mpeg");
+
   @Transactional
   public GetPresignedURLResponseDTO getPresignedURL(String originalFileName, String contentType, Long fileSize,
       String userId) {
+
+    if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType)) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported content type: " + contentType);
+    }
+
     String extension = "";
     if (originalFileName != null && originalFileName.contains(".")) {
       extension = originalFileName.substring(originalFileName.lastIndexOf("."));
@@ -89,7 +102,7 @@ public class GcsStorageService {
     }
   }
 
-  public void handleFileUploadSuccess(String objectName, long size) {
+  public void handleFileUploadSuccess(String objectName) {
     try {
       String decodedObjectName = URLDecoder.decode(objectName, StandardCharsets.UTF_8);
 
@@ -100,10 +113,34 @@ public class GcsStorageService {
 
       MDC.put("fileId", fileMetadata.getId().toString());
 
-      // Update size if provided (and greater than 0), as the initial metadata might
-      // have had 0 or estimated size
-      if (size > 0) {
-        fileMetadata.setFileSize(size);
+      Blob blob = storage.get(BlobId.of(bucketName, decodedObjectName),
+          Storage.BlobGetOption.fields(Storage.BlobField.SIZE));
+      long actualSize = blob.getSize();
+
+      if (actualSize <= maxFileBytes) {
+        fileMetadata.setFileSize(actualSize);
+      } else {
+        deleteObject(decodedObjectName);
+        fileMetadata.setFileSize(actualSize);
+        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+        fileMetadataRepository.save(fileMetadata);
+        log.error("[GCSService] File too big: {}", decodedObjectName);
+
+        PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
+            .eventType(PipelineEventEnum.UPLOAD_REJECTED)
+            .message(
+                "File is too large to be processed, please upload a file smaller than " + (maxFileBytes / 1024 / 1024)
+                    + " MB. This file with size " + (fileMetadata.getFileSize() / 1024 / 1024) + " MB will be deleted.")
+            .metadata(Map.of(
+                "contentType", fileMetadata.getContentType(),
+                "fileSize", actualSize,
+                "objectName", fileMetadata.getObjectName(),
+                "bucketName", fileMetadata.getBucketName(),
+                "fileStatus", fileMetadata.getFileStatus().toString()))
+            .build();
+
+        kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
+        return;
       }
 
       fileMetadata.setFileStatus(FileStatusEnum.UPLOADED);

@@ -12,5 +12,8 @@ public enum PipelineEventEnum {
   TRANSCRIPTION_STARTED,
   TRANSCRIPTION_COMPLETE,
   EMBEDDING_COMPLETE,
-  PIPELINE_COMPLETE
+  PIPELINE_COMPLETE,
+  UPLOAD_REJECTED
 }
+
+// TODO: Add an error event and have the details in the message. TBD
