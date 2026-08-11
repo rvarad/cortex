@@ -19,6 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.cortex.cortex_ingestion.dto.FileResponseDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLRequestDTO;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
+import com.cortex.cortex_ingestion.dto.PlaybackUrlResponseDTO;
 import com.cortex.cortex_ingestion.dto.UpdateFileRequestDTO;
 import com.cortex.cortex_ingestion.service.FilesService;
 import com.cortex.cortex_ingestion.service.GcsStorageService;
@@ -26,6 +27,7 @@ import com.cortex.cortex_ingestion.service.PipelineEventsService;
 
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @Slf4j
 @RestController
@@ -94,6 +96,17 @@ public class FilesController {
 
     String userId = authentication.getName();
     return pipelineEventsService.subscribeToEvents(fileId, userId);
+  }
+
+  @GetMapping("/{fileId}/playback-url")
+  public ResponseEntity<PlaybackUrlResponseDTO> getPlaybackUrl(@PathVariable UUID fileId,
+      Authentication authentication) {
+
+    String userId = authentication.getName();
+
+    PlaybackUrlResponseDTO response = gcsStorageService.signPlaybackUrl(fileId, userId);
+
+    return ResponseEntity.ok(response);
   }
 
 }

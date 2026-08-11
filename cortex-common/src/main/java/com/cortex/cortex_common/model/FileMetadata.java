@@ -79,6 +79,9 @@ public class FileMetadata {
   @Column
   private String videoCodec;
 
+  @Column
+  private String playbackObjectName;
+
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
 

@@ -3,6 +3,8 @@ package com.cortex.cortex_ingestion.service;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +25,7 @@ import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
+import com.cortex.cortex_ingestion.dto.PlaybackUrlResponseDTO;
 import com.google.api.gax.paging.Page;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
@@ -49,6 +52,9 @@ public class GcsStorageService {
 
   @Value("${cortex.media.max-file-size-bytes}")
   private Long maxFileBytes;
+
+  @Value("${cortex.media.playback-url-expiry-hours}")
+  private int playbackUrlExpiryHours;
 
   private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("video/mp4", "video/webm", "audio/wav", "audio/mpeg");
 
@@ -115,6 +121,12 @@ public class GcsStorageService {
 
       Blob blob = storage.get(BlobId.of(bucketName, decodedObjectName),
           Storage.BlobGetOption.fields(Storage.BlobField.SIZE));
+
+      if (blob == null) {
+        log.error("[GCSService] Object not found in GCS for objectName: {}", decodedObjectName);
+        throw new RuntimeException("Object not found in GCS for objectName: " + decodedObjectName);
+      }
+
       long actualSize = blob.getSize();
 
       if (actualSize <= maxFileBytes) {
@@ -166,7 +178,7 @@ public class GcsStorageService {
 
     } catch (Exception e) {
       log.error("[GCSService] Error sending file upload success event for objectName: {}", objectName, e);
-      throw new RuntimeException("Error sending file upload success event for objectName: " + objectName, e);
+      throw new RuntimeException("Error sending file uploPlad success event for objectName: " + objectName, e);
     } finally {
       MDC.remove("fileId");
     }
@@ -183,6 +195,37 @@ public class GcsStorageService {
     for (Blob blob : blobs.iterateAll()) {
       storage.delete(blob.getBlobId());
       log.info("[GCSService] Deleted chunk for objectName: {}", blob.getName());
+    }
+  }
+
+  public PlaybackUrlResponseDTO signPlaybackUrl(UUID fileId, String userId) {
+    FileMetadata fileMetadata = fileMetadataRepository.findByIdAndUserId(fileId, userId)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+
+    if (fileMetadata.getFileStatus() == FileStatusEnum.REJECTED) {
+      throw new ResponseStatusException(HttpStatus.GONE,
+          "This upload was rejected and is no longer available.");
+    }
+
+    String playbackObject = fileMetadata.getPlaybackObjectName();
+    if (playbackObject == null) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT,
+          "Playback is not ready yet. This file is still being processed.");
+    }
+
+    try {
+      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
+      URL url = storage.signUrl(blobInfo, playbackUrlExpiryHours, TimeUnit.HOURS,
+          Storage.SignUrlOption.httpMethod(HttpMethod.GET), Storage.SignUrlOption.withV4Signature());
+
+      Instant expiresAt = Instant.now().plus(Duration.ofHours(playbackUrlExpiryHours));
+
+      return PlaybackUrlResponseDTO.builder().playbackUrl(url.toString()).expiresAt(expiresAt)
+          .hasVideo(fileMetadata.getHasVideo()).build();
+
+    } catch (Exception e) {
+      log.error("[GCSService] Error getting playback url for fileId : {}", fileId, e);
+      throw new RuntimeException("Error getting playback url for fileId : " + fileId + " : " + e);
     }
   }
 }
