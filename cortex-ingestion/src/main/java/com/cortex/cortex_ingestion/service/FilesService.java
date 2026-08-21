@@ -68,7 +68,7 @@ public class FilesService {
         @Override
         public void afterCommit() {
           try {
-            gcsStorageService.deleteObject(objectName);
+            gcsStorageService.deleteObject(objectName, fileId);
             log.info("[FilesService] Successfully deleted GCS objects for fileId: {}, objectName: {}", fileId,
                 objectName);
           } catch (Exception e) {

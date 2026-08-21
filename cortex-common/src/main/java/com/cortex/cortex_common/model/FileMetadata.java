@@ -82,6 +82,13 @@ public class FileMetadata {
   @Column
   private String playbackObjectName;
 
+  // Defaulted to PENDING in onCreate() so existing builder call sites don't have
+  // to set it. The normalization thread flips it to READY / UNAVAILABLE later via
+  // a targeted @Modifying update.
+  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (playback_status IN ('PENDING', 'READY', 'UNAVAILABLE'))")
+  @Enumerated(EnumType.STRING)
+  private PlaybackStatusEnum playbackStatus;
+
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
 
@@ -92,5 +99,8 @@ public class FileMetadata {
   @PrePersist
   protected void onCreate() {
     this.createdAt = LocalDateTime.now();
+    if (this.playbackStatus == null) {
+      this.playbackStatus = PlaybackStatusEnum.PENDING;
+    }
   }
 }

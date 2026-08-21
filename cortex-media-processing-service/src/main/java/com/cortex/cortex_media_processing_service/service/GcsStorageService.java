@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.google.api.gax.paging.Page;
+import com.google.cloud.ReadChannel;
 import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
@@ -47,26 +48,41 @@ public class GcsStorageService {
     }
   }
 
+  /**
+   * Generic streaming upload of a local file to an arbitrary GCS object path.
+   * The caller owns the destination path + contentType; this only moves bytes.
+   */
+  public String uploadFile(String destinationObjectName, Path localFile, String contentType) {
+    try {
+      log.info("[GCSService] Uploading file to: {}", destinationObjectName);
+
+      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, destinationObjectName))
+          .setContentType(contentType)
+          .build();
+
+      try (InputStream inputStream = Files.newInputStream(localFile);
+          WriteChannel writer = storage.writer(blobInfo)) {
+        byte[] buffer = new byte[64 * 1024];
+
+        int limit;
+        while ((limit = inputStream.read(buffer)) >= 0) {
+          writer.write(ByteBuffer.wrap(buffer, 0, limit));
+        }
+      }
+      return destinationObjectName;
+    } catch (Exception e) {
+      log.info("[GCS Storage Service] Failed to upload file to {}", destinationObjectName);
+      throw new RuntimeException("[GCS Storage Service] Failed to upload file to " + destinationObjectName, e);
+    }
+  }
+
   public String uploadChunk(String objectName, Path chunkToUpload) throws Exception {
     String fileName = chunkToUpload.getFileName().toString();
     String contentType = fileName.toLowerCase().endsWith("mp4") ? "video/mp4" : "audio/wav";
 
     // Using a "chunks/" folder prefix within the same bucket
     String fullGcsPath = "chunks/" + objectName.replace("uploads/", "") + "/" + fileName;
-    log.info("[GCSService] Uploading chunk to folder: {}", fullGcsPath);
-    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, fullGcsPath))
-        .setContentType(contentType)
-        .build();
-    try (InputStream inputStream = Files.newInputStream(chunkToUpload);
-        WriteChannel writer = storage.writer(blobInfo)) {
-      byte[] buffer = new byte[64 * 1024];
-
-      int limit;
-      while ((limit = inputStream.read(buffer)) >= 0) {
-        writer.write(ByteBuffer.wrap(buffer, 0, limit));
-      }
-    }
-    return fullGcsPath;
+    return uploadFile(fullGcsPath, chunkToUpload, contentType);
   }
 
   public void deleteObject(String objectName) {
@@ -80,6 +96,26 @@ public class GcsStorageService {
     for (Blob blob : blobs.iterateAll()) {
       storage.delete(blob.getBlobId());
       log.info("[GCSService] Deleted chunk for objectName: {}", blob.getName());
+    }
+  }
+
+  public byte[] readHead(String objectName, int howManyBytes) {
+    BlobId blobId = BlobId.of(bucketName, objectName);
+
+    try (ReadChannel reader = storage.reader(blobId)) {
+      ByteBuffer bucket = ByteBuffer.allocate(howManyBytes);
+
+      while (bucket.hasRemaining() && reader.read(bucket) != -1) {
+      }
+      bucket.flip();
+
+      byte[] head = new byte[bucket.remaining()];
+      bucket.get(head);
+
+      return head;
+    } catch (Exception e) {
+      log.error("[GCSService] readHead failed for {}", objectName, e);
+      throw new RuntimeException("readHead failed for " + objectName, e);
     }
   }
 }

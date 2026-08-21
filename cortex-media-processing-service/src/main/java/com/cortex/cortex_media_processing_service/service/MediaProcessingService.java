@@ -3,6 +3,7 @@ package com.cortex.cortex_media_processing_service.service;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedWatchServiceException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -18,10 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -71,6 +72,7 @@ public class MediaProcessingService {
   private double maxDurationInSeconds;
 
   private static final int MAX_CONCURRENT_UPLOADS = 5;
+  private static final int MAX_CONCURRENT_NORMALISATIONS = 2;
 
   private static final int AUDIO_CHUNK_DURATION_S = 60;
   private static final int FFMPEG_PROCESSING_TIMEOUT_M = 30;
@@ -79,9 +81,17 @@ public class MediaProcessingService {
 
   private static final String TEMP_DIRECTORY = "/tmp/media-processing-service-chunks";
 
+  private static enum NormalisationEnum {
+    PASSTHROUGH,
+    REMUX,
+    TRANSCODE_VIDEO,
+    TRANSCODE_AUDIO
+  }
+
   private static final Pattern MAX_VOLUME = Pattern.compile("max_volume:\\s*(-?[\\d.]+)");
 
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
+  private final Semaphore normalisationSlots = new Semaphore(MAX_CONCURRENT_NORMALISATIONS);
 
   public void processMedia(String objectName, UUID fileId, String userId) {
     log.info("Beginning chunking for file: {}", objectName);
@@ -126,6 +136,13 @@ public class MediaProcessingService {
         return;
       }
 
+      // moovAtFront
+      BooleanSupplier moovAtFront = () -> isMoovBeforeMdat(gcsStorageService.readHead(objectName, 4 << 20)); // 4mB
+                                                                                                             // slice
+
+      // decideNormalisationStrategy
+      NormalisationEnum plan = decideNormalisationStrategy(fileMetadata.getContentType(), manifestDTO, moovAtFront);
+
       Path workDir = createWorkingDir(objectName);
       log.info("Created working directory: {}", workDir.toString());
       log.info("Created working directory: {}", workDir.getFileName().toString());
@@ -139,8 +156,57 @@ public class MediaProcessingService {
 
       MediaProcessingContext processContext = ctx;
 
-      String videoPattern = workDir.resolve("video_chunk_%03d.mp4").toString();
-      String audioPattern = workDir.resolve("audio_chunk_%03d.wav").toString();
+      String videoPattern = workDir.resolve("chunks").resolve("video_chunk_%03d.mp4").toString();
+      String audioPattern = workDir.resolve("chunks").resolve("audio_chunk_%03d.wav").toString();
+
+      Thread normalisationThread = null;
+
+      if (plan.equals(NormalisationEnum.PASSTHROUGH)) {
+        fileMetadataRepository.updatePlaybackReady(fileId, objectName);
+      } else {
+        normalisationThread = Thread.startVirtualThread(withMDC(() -> {
+          try {
+            normalisationSlots.acquire();
+
+            try {
+              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
+                      .message("Generating playback version").build());
+
+              Path local = null;
+              if (plan.equals(NormalisationEnum.REMUX)) {
+                local = remuxFile(streamUrl, workDir);
+              } else if (plan.equals(NormalisationEnum.TRANSCODE_AUDIO)) {
+                local = transcodeAudio(streamUrl, workDir);
+              } else {
+                local = transcodeVideo(streamUrl, workDir);
+              }
+
+              String extension = plan.equals(NormalisationEnum.TRANSCODE_AUDIO) ? ".m4a" : ".mp4";
+              String contentType = plan.equals(NormalisationEnum.TRANSCODE_AUDIO) ? "audio/mp4" : "video/mp4";
+              String destinationObjectName = "playback/" + fileId + extension;
+              gcsStorageService.uploadFile(destinationObjectName, local, contentType);
+
+              fileMetadataRepository.updatePlaybackReady(fileId, destinationObjectName);
+              Files.deleteIfExists(local);
+
+              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
+                      .message("Playback version is ready").build());
+            } finally {
+              normalisationSlots.release();
+            }
+          } catch (Exception e) {
+            log.error("Normalisation failed for {}", fileId, e);
+            // Persist the terminal playback state BEFORE announcing, so any
+            // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
+            fileMetadataRepository.updatePlaybackUnavailable(fileId);
+            kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
+                    .message("Playback version could not be generated").build());
+          }
+        }));
+      }
 
       Thread.startVirtualThread(withMDC(() -> startDirectoryWatcher(processContext)));
       Thread.startVirtualThread(withMDC(() -> startUploadDispatcher(processContext)));
@@ -153,7 +219,7 @@ public class MediaProcessingService {
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
       kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
 
-      Process ffmpegProcess = startFFmpegProcess(streamUrl, videoPattern, audioPattern,
+      Process ffmpegProcess = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
 
       Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(ffmpegProcess)));
@@ -174,22 +240,29 @@ public class MediaProcessingService {
 
       int totalChunksCount = processContext.getTotalChunks().get();
 
-      if (fileMetadata != null) {
-        fileMetadata.setDurationSeconds(manifestDTO.getDuration_s());
-        fileMetadata.setHasVideo(manifestDTO.isHasVideo());
-        fileMetadata.setHasAudio(manifestDTO.isHasAudio());
-        fileMetadata.setVideoCodec(manifestDTO.getVideoCodec());
-        fileMetadata.setTotalChunks(totalChunksCount);
-        fileMetadata.setFileStatus(FileStatusEnum.CHUNKED);
-        fileMetadataRepository.save(fileMetadata);
-
-        log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
-      }
+      // Persist the chunking result NOW via a targeted update — deliberately NOT a
+      // full save, so it leaves playbackObjectName alone (the normalization thread
+      // owns that column). This makes totalChunks durable before CHUNKING_COMPLETE
+      // fires and before embeddings finish, so the completion check can read it.
+      fileMetadataRepository.updateChunkingResult(fileId, FileStatusEnum.CHUNKED, totalChunksCount,
+          manifestDTO.getDuration_s(), manifestDTO.isHasVideo(), manifestDTO.isHasAudio(),
+          manifestDTO.getVideoCodec());
+      log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
 
       kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
           PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.CHUNKING_COMPLETE)
               .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
               .build());
+
+      // Hold the Kafka message open until normalization also finishes
+      // (retry-correctness).
+      if (normalisationThread != null)
+        normalisationThread.join();
+
+      // Recursive (not deleteIfExists, which throws on a non-empty dir): on a
+      // normalization failure a partial normalized.* file can be left behind, and
+      // we must not let cleanup turn a best-effort failure into a pipeline failure.
+      deleteRecursively(workDir);
 
       log.info("Media processing completed and cleaned up.");
 
@@ -205,8 +278,26 @@ public class MediaProcessingService {
     }
   }
 
-  private boolean isAudioSilent(String streamUrl) {
+  private NormalisationEnum decideNormalisationStrategy(String contentType, MediaFileManifestDTO manifestDTO,
+      BooleanSupplier moovAtFront) {
+    if ("audio/mpeg".equalsIgnoreCase(contentType) || "video/webm".equalsIgnoreCase(contentType)) {
+      return NormalisationEnum.PASSTHROUGH;
+    } else if ("audio/wav".equalsIgnoreCase(contentType)) {
+      return NormalisationEnum.TRANSCODE_AUDIO;
+    } else if ("video/mp4".equalsIgnoreCase(contentType)) {
+      if (!manifestDTO.isHasVideo())
+        return NormalisationEnum.PASSTHROUGH;
+      if (!"h264".equalsIgnoreCase(manifestDTO.getVideoCodec())) {
+        return NormalisationEnum.TRANSCODE_VIDEO;
+      } else {
+        return moovAtFront.getAsBoolean() ? NormalisationEnum.PASSTHROUGH : NormalisationEnum.REMUX;
+      }
+    } else {
+      throw new IllegalStateException("This is bad");
+    }
+  }
 
+  private boolean isAudioSilent(String streamUrl) {
     log.info("Checking if audio is silent: {}", streamUrl);
     Double maxVolume = null;
 
@@ -235,6 +326,36 @@ public class MediaProcessingService {
       log.error("Error checking if audio is silent", e);
       return false;
     }
+  }
+
+  private static boolean isMoovBeforeMdat(byte[] head) {
+    long position = 0;
+    while (position + 8 <= head.length) {
+      long size = readSize(head, (int) position);
+      String name = readName(head, (int) position);
+
+      if ("moov".equalsIgnoreCase(name))
+        return true;
+      if ("mdat".equalsIgnoreCase(name))
+        return false;
+
+      if (size < 8)
+        return false;
+      position += size;
+    }
+
+    return false;
+  }
+
+  private static long readSize(byte[] data, int position) {
+    return ((long) (data[position] & 0xFF) << 24)
+        | ((long) (data[position + 1] & 0xFF) << 16)
+        | ((long) (data[position + 2] & 0xFF) << 8)
+        | ((long) (data[position + 3] & 0xFF));
+  }
+
+  private static String readName(byte[] data, int position) {
+    return new String(data, position + 4, 4, StandardCharsets.US_ASCII);
   }
 
   private MediaFileManifestDTO probeMediaFile(String streamUrl) {
@@ -298,7 +419,7 @@ public class MediaProcessingService {
     }
   }
 
-  private Process startFFmpegProcess(String streamUrl, String videoPattern, String audioPattern,
+  private Process startFFmpegChunkingProcess(String streamUrl, String videoPattern, String audioPattern,
       MediaFileManifestDTO manifest) throws Exception {
 
     log.info("Starting FFmpeg process for media file: {}", streamUrl);
@@ -332,6 +453,101 @@ public class MediaProcessingService {
     processBuilder.redirectErrorStream(true);
 
     return processBuilder.start();
+  }
+
+  /**
+   * REMUX: h264 already, just move the moov atom to the front (faststart) so the
+   * browser can seek without downloading the whole file. `-c copy` = no
+   * re-encode.
+   * Returns the local output file (caller uploads it + sets
+   * playback_object_name).
+   */
+  private Path remuxFile(String streamUrl, Path workDir) {
+    try {
+      Path output = workDir.resolve("normalized.mp4");
+      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+          "-map", "0:v:0", "-map", "0:a:0?",
+          "-c", "copy",
+          "-movflags", "+faststart",
+          output.toString());
+      runNormalization(command, "REMUX");
+      return output;
+    } catch (Exception e) {
+      log.error("[MediaProcessingService] Failed to remux file :{}, Due to: {}", streamUrl, e);
+      throw new RuntimeException("[MediaProcessingService] Failed to remux file : " + streamUrl, e);
+    }
+  }
+
+  /**
+   * TRANSCODE_VIDEO: re-encode a non-h264 codec (HEVC/AV1) to browser-playable
+   * h264. `-pix_fmt yuv420p` is mandatory — iPhone HEVC is often 10-bit HDR, and
+   * without forcing 8-bit 4:2:0 the h264 output still won't play in Chrome.
+   */
+  private Path transcodeVideo(String streamUrl, Path workDir) {
+    try {
+      Path output = workDir.resolve("normalized.mp4");
+      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+          "-map", "0:v:0", "-map", "0:a:0?",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "128k",
+          "-movflags", "+faststart",
+          "-threads", "2",
+          output.toString());
+      runNormalization(command, "TRANSCODE_VIDEO");
+      return output;
+    } catch (Exception e) {
+      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
+      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
+    }
+  }
+
+  /**
+   * TRANSCODE_AUDIO: WAV (uncompressed) to AAC/m4a — a ~10:1 storage/bandwidth
+   * win.
+   */
+  private Path transcodeAudio(String streamUrl, Path workDir) {
+    try {
+      Path output = workDir.resolve("normalized.m4a");
+      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+          "-map", "0:a:0", "-vn",
+          "-c:a", "aac", "-b:a", "192k",
+          "-movflags", "+faststart",
+          output.toString());
+      runNormalization(command, "TRANSCODE_AUDIO");
+      return output;
+    } catch (Exception e) {
+      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
+      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
+    }
+  }
+
+  /**
+   * Runs a normalization ffmpeg command to completion (single output file, no
+   * streaming chunks). Drains output on a virtual thread so the pipe buffer can't
+   * block ffmpeg, enforces the overall timeout, and throws on non-zero exit.
+   */
+  private void runNormalization(List<String> command, String label) throws Exception {
+    log.info("Starting normalization ({}) with command: {}", label, String.join(" ", command));
+
+    ProcessBuilder processBuilder = new ProcessBuilder(command);
+    processBuilder.redirectErrorStream(true);
+    Process process = processBuilder.start();
+
+    Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(process)));
+
+    boolean finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
+    if (!finished) {
+      process.destroyForcibly();
+      throw new Exception(
+          "Normalization (" + label + ") exceeded the timeout of " + FFMPEG_PROCESSING_TIMEOUT_M + " minutes");
+    }
+
+    int exitCode = process.exitValue();
+    if (exitCode != 0) {
+      throw new Exception("Normalization (" + label + ") failed with exit code: " + exitCode);
+    }
+
+    log.info("Normalization ({}) completed successfully: {}", label, command.get(command.size() - 1));
   }
 
   private void monitorFFmpegOutput(Process process) {
@@ -384,8 +600,8 @@ public class MediaProcessingService {
   private void startDirectoryWatcher(MediaProcessingContext processContext) {
     try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
 
-      Path workDir = processContext.getWorkDir();
-      workDir.register(watchService, StandardWatchEventKinds.ENTRY_CREATE);
+      Path chunksDir = processContext.getWorkDir().resolve("chunks");
+      chunksDir.register(watchService, StandardWatchEventKinds.ENTRY_CREATE);
 
       Path previousVideoChunk = null;
       Path previousAudioChunk = null;
@@ -406,7 +622,7 @@ public class MediaProcessingService {
 
         for (WatchEvent<?> event : key.pollEvents()) {
           Path fileName = (Path) event.context();
-          Path fullPath = workDir.resolve(fileName);
+          Path fullPath = chunksDir.resolve(fileName);
           String name = fileName.toString();
 
           processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
@@ -542,17 +758,22 @@ public class MediaProcessingService {
   private Path createWorkingDir(String objectName) throws IOException {
     log.info("Creating work directory.");
     Path workDir = Paths.get(TEMP_DIRECTORY, objectName);
-    Files.createDirectories(workDir);
+    // Chunks live in a "chunks/" subdir so the watcher can be scoped to it — the
+    // normalized playback file sits at the workDir (parent) level, invisible to
+    // the watcher, so it's never mistaken for a chunk. createDirectories makes
+    // both.
+    Files.createDirectories(workDir.resolve("chunks"));
     log.info("Created work directory successfully.");
     return workDir;
   }
 
   private void cleanUpWorkingDir(MediaProcessingContext processContext) {
-    log.info("Starting cleanup for working directory: {}", processContext.getWorkDir());
+    Path chunksDir = processContext.getWorkDir().resolve("chunks");
+    log.info("Starting cleanup for chunks directory: {}", chunksDir);
 
     try {
       // 1. Sweep for any remaining chunks that weren't uploaded
-      try (var files = Files.list(processContext.getWorkDir())) {
+      try (var files = Files.list(chunksDir)) {
         files.filter(path -> {
           String name = path.getFileName().toString();
           return name.endsWith(".mp4") || name.endsWith(".wav");
@@ -590,8 +811,10 @@ public class MediaProcessingService {
         return;
       }
 
-      // 5. Delete the working directory recursively
-      try (var paths = Files.walk(processContext.getWorkDir())) {
+      // 5. Delete the chunks directory recursively (NOT the parent workDir — the
+      // normalized playback file lives there and may still be in use by the
+      // normalization thread; the parent is removed by the wait-for-both wiring).
+      try (var paths = Files.walk(chunksDir)) {
         paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
             .forEach(path -> {
               try {
@@ -602,10 +825,27 @@ public class MediaProcessingService {
             });
       }
 
-      log.info("Successfully cleaned up working directory: {}", processContext.getWorkDir());
+      log.info("Successfully cleaned up chunks directory: {}", chunksDir);
 
     } catch (Exception e) {
       log.error("Error during cleanup of working directory: {}", processContext.getWorkDir(), e);
+    }
+  }
+
+  private void deleteRecursively(Path dir) {
+    if (!Files.exists(dir))
+      return;
+    try (var paths = Files.walk(dir)) {
+      paths.sorted((a, b) -> b.compareTo(a)) // files before their parent directories
+          .forEach(path -> {
+            try {
+              Files.deleteIfExists(path);
+            } catch (IOException e) {
+              log.warn("Failed to delete: {}", path, e);
+            }
+          });
+    } catch (IOException e) {
+      log.warn("Failed to walk {} for deletion", dir, e);
     }
   }
 

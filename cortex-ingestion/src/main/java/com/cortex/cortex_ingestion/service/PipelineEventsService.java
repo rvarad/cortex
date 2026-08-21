@@ -17,6 +17,7 @@ import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.model.PlaybackStatusEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_ingestion.model.PipelineEvent;
@@ -117,7 +118,9 @@ public class PipelineEventsService {
       });
 
       if (eventDTO.getEventType() == PipelineEventEnum.CHUNKING_COMPLETE
-          || eventDTO.getEventType() == PipelineEventEnum.EMBEDDING_COMPLETE) {
+          || eventDTO.getEventType() == PipelineEventEnum.EMBEDDING_COMPLETE
+          || eventDTO.getEventType() == PipelineEventEnum.NORMALISATION_COMPLETE
+          || eventDTO.getEventType() == PipelineEventEnum.NORMALISATION_FAILED) {
         checkPipelineCompletion(eventDTO.getFileId());
       }
 
@@ -149,7 +152,7 @@ public class PipelineEventsService {
 
     long completedChunks = mediaChunkRepository.countByFileIdAndStatus(fileId, MediaChunk.Status.COMPLETED);
 
-    if (completedChunks >= file.getTotalChunks()) {
+    if (completedChunks >= file.getTotalChunks() && file.getPlaybackStatus() != PlaybackStatusEnum.PENDING) {
       log.info("[PipelineEventsService] All chunks for fileId {} are completed. Marking pipeline as COMPLETED.",
           fileId);
 

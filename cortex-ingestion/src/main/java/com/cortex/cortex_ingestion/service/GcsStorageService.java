@@ -23,6 +23,7 @@ import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.model.PlaybackStatusEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.dto.PlaybackUrlResponseDTO;
@@ -132,7 +133,7 @@ public class GcsStorageService {
       if (actualSize <= maxFileBytes) {
         fileMetadata.setFileSize(actualSize);
       } else {
-        deleteObject(decodedObjectName);
+        deleteObject(decodedObjectName, fileMetadata.getId());
         fileMetadata.setFileSize(actualSize);
         fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
         fileMetadataRepository.save(fileMetadata);
@@ -184,17 +185,20 @@ public class GcsStorageService {
     }
   }
 
-  public void deleteObject(String objectName) {
+  public void deleteObject(String objectName, UUID fileId) {
     storage.delete(BlobId.of(bucketName, objectName));
     log.info("[GCSService] Deleted object for fileId: {}", objectName);
 
-    String chunksPrefix = "chunks/" + objectName.replace("uploads/", "") + "/";
+    deletePrefix("chunks/" + objectName.replace("uploads/", "") + "/");
 
-    Page<Blob> blobs = storage.list(bucketName, Storage.BlobListOption.prefix(chunksPrefix));
+    deletePrefix("playback/" + fileId);
+  }
 
+  private void deletePrefix(String prefix) {
+    Page<Blob> blobs = storage.list(bucketName, Storage.BlobListOption.prefix(prefix));
     for (Blob blob : blobs.iterateAll()) {
       storage.delete(blob.getBlobId());
-      log.info("[GCSService] Deleted chunk for objectName: {}", blob.getName());
+      log.info("[GCSService] Deleted object: {}", blob.getName());
     }
   }
 
@@ -207,11 +211,13 @@ public class GcsStorageService {
           "This upload was rejected and is no longer available.");
     }
 
+    if (fileMetadata.getPlaybackStatus() == PlaybackStatusEnum.PENDING)
+      throw new ResponseStatusException(HttpStatus.TOO_EARLY, "File still processing");
+
+    if (fileMetadata.getPlaybackStatus() == PlaybackStatusEnum.UNAVAILABLE)
+      throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Normalisation failed");
+
     String playbackObject = fileMetadata.getPlaybackObjectName();
-    if (playbackObject == null) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Playback is not ready yet. This file is still being processed.");
-    }
 
     try {
       BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
