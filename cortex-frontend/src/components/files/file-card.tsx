@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { badgeVariants } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,219 +19,273 @@ import {
   Pencil,
   Trash2,
   MessageSquare,
+  Play,
+  CircleSlash,
+  Loader2,
+  CheckCircle2,
   XCircle,
-  ChevronDown,
+  AlertTriangle,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { formatFileSize } from "@/lib/helpers";
+import { formatFileSize, formatDuration, formatMediaType } from "@/lib/helpers";
+import { getPlaybackUrl, ApiError } from "@/lib/api";
+import type { FileItem, RejectionReason } from "@/lib/types";
+import { toast } from "sonner";
 import { RenameDialog } from "./rename-dialog";
 import { DeleteDialog } from "./delete-dialog";
-import { PipelineStatus } from "./pipeline-status";
 import Link from "next/link";
 
-interface FileCardProps {
-  fileId: string;
-  displayName: string;
-  contentType: string;
-  fileSize: number;
-  onMutate: () => void;
-  showPipelineStatus?: boolean;
-  isRejected?: boolean;
+const REJECTION_LABELS: Record<RejectionReason, string> = {
+  TOO_BIG: "Too large",
+  TOO_LONG: "Too long",
+  CORRUPTED: "Corrupted",
+};
+
+function playbackErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.status) {
+      case 425:
+        return "Playback is still being prepared. Try again in a moment.";
+      case 422:
+        return "Playback isn't available for this file.";
+      case 410:
+        return "This upload was rejected and is no longer available.";
+      case 404:
+        return "File not found.";
+    }
+  }
+  return "Couldn't start playback. Please try again.";
 }
 
-export function FileCard({
-  fileId,
-  displayName,
-  contentType,
-  fileSize,
-  onMutate,
-  showPipelineStatus = false,
-  isRejected: isRejectedFromList = false,
-}: FileCardProps) {
+interface FileCardProps {
+  file: FileItem;
+  onMutate: () => void;
+}
+
+export function FileCard({ file, onMutate }: FileCardProps) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  // `isRejected` comes from the file list, which is a snapshot from page load.
-  // A file rejected mid-processing (e.g. over the duration cap) is only known
-  // from the live event stream, so track that too.
-  const [rejectedLive, setRejectedLive] = useState(false);
-  const [rejectionMessage, setRejectionMessage] = useState<string | null>(null);
-  const [reasonOpen, setReasonOpen] = useState(false);
+  const [isOpeningPlayback, setIsOpeningPlayback] = useState(false);
 
-  const isRejected = isRejectedFromList || rejectedLive;
+  const isFailure =
+    file.fileStatus === "REJECTED" || file.fileStatus === "FAILED";
+  const isProcessed = file.fileStatus === "COMPLETED";
 
-  const Icon = contentType.startsWith("video/")
+  const Icon = file.contentType.startsWith("video/")
     ? FileVideo
-    : contentType.startsWith("audio/")
+    : file.contentType.startsWith("audio/")
     ? FileAudio
     : File;
 
-  const mediaType = contentType.startsWith("video/")
-    ? "Video"
-    : contentType.startsWith("audio/")
-    ? "Audio"
-    : "File";
+  // "Video · 12:34 · 84.2 MB" — duration is absent until the server-side probe runs.
+  const metaLine = [
+    formatMediaType(file.contentType),
+    file.durationSeconds != null ? formatDuration(file.durationSeconds) : null,
+    formatFileSize(file.fileSize),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
-  const identity = (
-    <>
-      <div
-        className={cn(
-          "rounded-lg p-2 shrink-0 transition-colors",
-          isRejected
-            ? "bg-red-500/10"
-            : "bg-primary/10 group-hover/link:bg-primary/20"
-        )}
-      >
-        <Icon
-          className={cn("h-5 w-5", isRejected ? "text-red-500" : "text-primary")}
-        />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p
-          className={cn(
-            "truncate text-sm font-medium transition-colors",
-            !isRejected && "group-hover/link:text-primary"
-          )}
-          title={displayName}
-        >
-          {displayName}
-        </p>
-        <div className="mt-1 flex items-center gap-2">
-          <Badge variant="secondary" className="text-xs shrink-0">
-            {mediaType}
-          </Badge>
-          <span className="text-xs text-muted-foreground truncate">
-            {formatFileSize(fileSize)}
-          </span>
-        </div>
-      </div>
-    </>
+  const handlePlay = async () => {
+    // The tab must be opened synchronously inside the click handler. Browsers
+    // only honour window.open while the user gesture is still "active", and
+    // awaiting the signing request consumes that window — open first, navigate
+    // once the URL arrives. (No "noopener" here: it makes window.open return
+    // null, so opener is severed manually instead.)
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
+
+    setIsOpeningPlayback(true);
+    try {
+      const { playbackUrl } = await getPlaybackUrl(file.fileId);
+
+      if (tab) {
+        tab.location.href = playbackUrl;
+      } else {
+        toast.error("Couldn't open a new tab. Allow pop-ups for this site.");
+      }
+    } catch (error) {
+      tab?.close();
+      toast.error(playbackErrorMessage(error));
+    } finally {
+      setIsOpeningPlayback(false);
+    }
+  };
+
+  // Playback resolves early — normalisation runs before chunking — so a file can
+  // be playable while the rest of the pipeline is still working. The two axes are
+  // rendered independently. Rejected and failed files have no object left in GCS,
+  // so they get no playback affordance at all.
+  const playbackSlot = isFailure ? null : file.playbackStatus === "READY" ? (
+    <Button size="sm" onClick={handlePlay} disabled={isOpeningPlayback}>
+      {isOpeningPlayback ? <Loader2 className="animate-spin" /> : <Play />}
+      Play
+    </Button>
+  ) : file.playbackStatus === "UNAVAILABLE" ? (
+    <span
+      role="img"
+      aria-label="Playback unavailable"
+      title="Playback unavailable"
+      className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground/60"
+    >
+      <CircleSlash className="size-3.5" />
+    </span>
+  ) : (
+    <span
+      title="Preparing playback…"
+      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 text-[0.8rem] font-medium text-muted-foreground"
+    >
+      <Play className="size-3.5 animate-pulse motion-reduce:animate-none" />
+      Preparing
+    </span>
   );
+
+  // One chip for the whole lifecycle, in a fixed position, always linking to the
+  // pipeline history. It changes state rather than disappearing, so the way in
+  // that the user learns while a file is processing still works afterwards.
+  const statusChip = (() => {
+    switch (file.fileStatus) {
+      case "COMPLETED":
+        return {
+          label: "Processed",
+          StatusIcon: CheckCircle2,
+          spin: false,
+          className: "border-green-500/30 text-green-500 hover:bg-green-500/10",
+        };
+      case "REJECTED":
+        return {
+          label: file.rejectionReason
+            ? `Rejected · ${REJECTION_LABELS[file.rejectionReason]}`
+            : "Rejected",
+          StatusIcon: XCircle,
+          spin: false,
+          className: "border-red-500/30 text-red-500 hover:bg-red-500/10",
+        };
+      case "FAILED":
+        return {
+          label: "Failed",
+          StatusIcon: AlertTriangle,
+          spin: false,
+          className: "border-red-500/30 text-red-500 hover:bg-red-500/10",
+        };
+      default:
+        return {
+          label: "Processing",
+          StatusIcon: Loader2,
+          spin: true,
+          className: "border-border text-muted-foreground hover:bg-muted",
+        };
+    }
+  })();
 
   return (
     <>
       <Card
-        onMouseLeave={() => setReasonOpen(false)}
         className={cn(
-          "group relative flex flex-col gap-3 p-4 transition-all",
-          isRejected
-            ? "border-red-500/20"
-            : "hover:shadow-md hover:shadow-primary/5 hover:border-primary/30"
+          "group flex flex-col gap-3 p-4 transition-all",
+          isFailure
+            ? "ring-red-500/20"
+            : "hover:shadow-md hover:shadow-primary/5"
         )}
       >
-        <div className="flex items-start justify-between gap-4">
-          {isRejected ? (
-            // Rejected files have no chunks, no playback, no pipeline page —
-            // rendered as plain content so there is nothing to click through to.
-            <div className="flex flex-1 items-center gap-3 min-w-0 p-1 -m-1">
-              {identity}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div
+              className={cn(
+                "shrink-0 rounded-lg p-2",
+                isFailure ? "bg-red-500/10" : "bg-primary/10"
+              )}
+            >
+              <Icon
+                className={cn(
+                  "h-5 w-5",
+                  isFailure ? "text-red-500" : "text-primary"
+                )}
+              />
             </div>
-          ) : (
-            <Link
-              href={`/files/${fileId}`}
-              className="flex flex-1 items-center gap-3 min-w-0 group/link cursor-pointer rounded-lg p-1 -m-1 transition-colors hover:bg-muted/50"
-            >
-              {identity}
-            </Link>
-          )}
-<DropdownMenu>
-  <DropdownMenuTrigger
-    nativeButton={true}
-    render={
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 opacity-0 transition-opacity group-hover:opacity-100 shrink-0"
-      >
-        <MoreVertical className="h-4 w-4" />
-      </Button>
-    }
-  />
-  <DropdownMenuContent align="end">
-    {!isRejected && (
-      <DropdownMenuItem
-        render={<Link href={`/files/${fileId}/chat`} />}
-      >
-        <MessageSquare className="mr-2 h-4 w-4" />
-        Chat
-      </DropdownMenuItem>
-    )}
-    <DropdownMenuItem onClick={() => setRenameOpen(true)}>
-      <Pencil className="mr-2 h-4 w-4" />
-      Rename
-    </DropdownMenuItem>
-    <DropdownMenuItem
-      onClick={() => setDeleteOpen(true)}
-      variant="destructive"
-    >
-      <Trash2 className="mr-2 h-4 w-4" />
-      Delete
-    </DropdownMenuItem>
-  </DropdownMenuContent>
-</DropdownMenu>
-
-        </div>
-        {showPipelineStatus && (
-          <PipelineStatus
-            fileId={fileId}
-            onRejected={(message) => {
-              setRejectedLive(true);
-              setRejectionMessage(message);
-            }}
-          />
-        )}
-
-        {isRejected && (
-          <div className="overflow-hidden rounded-lg border border-red-500/20 bg-red-500/5">
-            <button
-              type="button"
-              disabled={!rejectionMessage}
-              aria-expanded={reasonOpen}
-              onClick={() => setReasonOpen((open) => !open)}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors enabled:hover:bg-red-500/10 disabled:cursor-default"
-            >
-              <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-              <span className="flex-1 text-xs font-medium text-red-500">
-                Upload rejected
-              </span>
-              {rejectionMessage && (
-                <ChevronDown
-                  className={cn(
-                    "h-3.5 w-3.5 shrink-0 text-red-500/70 transition-transform duration-200",
-                    reasonOpen && "rotate-180"
-                  )}
-                />
-              )}
-            </button>
-
-            <AnimatePresence initial={false}>
-              {reasonOpen && rejectionMessage && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.18, ease: "easeOut" }}
-                  className="overflow-hidden"
-                >
-                  <p className="border-t border-red-500/15 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-                    {rejectionMessage}
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <div className="min-w-0 flex-1">
+              <p
+                className="truncate text-sm font-medium"
+                title={file.fileDisplayName}
+              >
+                {file.fileDisplayName}
+              </p>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                {metaLine}
+              </p>
+            </div>
           </div>
-        )}
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              nativeButton={true}
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="File options"
+                  className="h-8 w-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setRenameOpen(true)}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setDeleteOpen(true)}
+                variant="destructive"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {playbackSlot}
+            {isProcessed && (
+              <Link
+                href={`/files/${file.fileId}/chat`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                <MessageSquare />
+                Chat
+              </Link>
+            )}
+          </div>
+
+          <Link
+            href={`/files/${file.fileId}`}
+            title="View processing history"
+            className={cn(
+              badgeVariants({ variant: "outline" }),
+              "h-6 shrink-0 gap-1.5 px-2.5 transition-colors",
+              statusChip.className
+            )}
+          >
+            <statusChip.StatusIcon
+              className={cn(statusChip.spin && "animate-spin")}
+            />
+            {statusChip.label}
+          </Link>
+        </div>
       </Card>
 
       <RenameDialog
-        fileId={fileId}
-        currentName={displayName}
+        fileId={file.fileId}
+        currentName={file.fileDisplayName}
         open={renameOpen}
         onOpenChange={setRenameOpen}
         onRenamed={onMutate}
       />
       <DeleteDialog
-        fileId={fileId}
-        fileName={displayName}
+        fileId={file.fileId}
+        fileName={file.fileDisplayName}
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         onDeleted={onMutate}

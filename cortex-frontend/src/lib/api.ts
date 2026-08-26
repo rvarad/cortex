@@ -1,3 +1,10 @@
+import { PIPELINE_EVENT_TYPES } from "@/lib/types";
+import type {
+  FileItem,
+  PipelineStreamEvent,
+  PlaybackUrlResponse,
+} from "@/lib/types";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const API_VERSION = "/api/v1";
 
@@ -7,7 +14,7 @@ const API_URL = `${API_BASE}${API_VERSION}`;
 // Helper to get the root domain for clean auth flows (no /api, no /v1)
 const getRootUrl = () => API_BASE.replace(/\/api$/, "");
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
     this.name = "ApiError";
@@ -75,16 +82,19 @@ export async function getCurrentUser() {
 // ============ Files ============
 
 export async function getFiles() {
-  return request<
-    {
-      fileId: string;
-      fileDisplayName: string;
-      objectName: string;
-      contentType: string;
-      fileSize: number;
-      fileStatus: string;
-    }[]
-  >("/files");
+  return request<FileItem[]>("/files");
+}
+
+/**
+ * Signs a playback URL for one file. Deliberately NOT part of the list payload:
+ * every call is a signing operation and the result is a short-lived bearer token,
+ * so it is fetched on demand when the user actually asks to play.
+ *
+ * Throws ApiError with 425 (still preparing), 422 (normalisation failed),
+ * 410 (upload rejected) or 404 (not found / not yours).
+ */
+export async function getPlaybackUrl(fileId: string) {
+  return request<PlaybackUrlResponse>(`/files/${fileId}/playback-url`);
 }
 
 export async function getPresignedUrl(body: {
@@ -135,14 +145,7 @@ export async function deleteFile(fileId: string) {
 
 export function subscribeToPipelineEvents(
   fileId: string,
-  onEvent: (event: {
-    fileId: string;
-    chunkId?: string;
-    chunkIndex?: number;
-    eventType: string;
-    message?: string;
-    metadata?: Record<string, unknown>;
-  }) => void,
+  onEvent: (event: PipelineStreamEvent) => void,
   onError?: (error: Event) => void
 ): EventSource {
   const url = `${API_URL}/files/${fileId}/events`;
@@ -150,23 +153,7 @@ export function subscribeToPipelineEvents(
 
   // The backend sends named events via SseEmitter.event().name(eventType).
   // We must listen for each named event type individually.
-  const eventTypes = [
-    "PIPELINE_STARTED",
-    "CHUNKING_STARTED",
-    "CHUNKING_COMPLETE",
-    "CHUNK_UPLOAD_STARTED",
-    "CHUNK_UPLOAD_COMPLETE",
-    "MEDIA_CHUNK_READY",
-    "VISION_ANALYSIS_STARTED",
-    "VISION_ANALYSIS_COMPLETE",
-    "TRANSCRIPTION_STARTED",
-    "TRANSCRIPTION_COMPLETE",
-    "EMBEDDING_COMPLETE",
-    "PIPELINE_COMPLETE",
-    "UPLOAD_REJECTED",
-  ];
-
-  for (const type of eventTypes) {
+  for (const type of PIPELINE_EVENT_TYPES) {
     eventSource.addEventListener(type, (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);

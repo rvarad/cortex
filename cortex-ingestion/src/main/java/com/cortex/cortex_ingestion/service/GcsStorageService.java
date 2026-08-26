@@ -24,6 +24,7 @@ import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.model.PlaybackStatusEnum;
+import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.dto.GetPresignedURLResponseDTO;
 import com.cortex.cortex_ingestion.dto.PlaybackUrlResponseDTO;
@@ -136,6 +137,7 @@ public class GcsStorageService {
         deleteObject(decodedObjectName, fileMetadata.getId());
         fileMetadata.setFileSize(actualSize);
         fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+        fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_BIG);
         fileMetadataRepository.save(fileMetadata);
         log.error("[GCSService] File too big: {}", decodedObjectName);
 

@@ -57,7 +57,7 @@ public class PipelineEventsService {
     if (file.getFileStatus() == FileStatusEnum.COMPLETED) {
       log.info("[PipelineEventsService] File is already completed. Closing emitter for fileId: {}", fileId);
       emitter.complete();
-    } else if (file.getFileStatus() == FileStatusEnum.REJECTED) {
+    } else if (file.getFileStatus() == FileStatusEnum.REJECTED || file.getFileStatus() == FileStatusEnum.FAILED) {
       log.info("[PipelineEventsService] File has been rejected. Closing emitter for fileId: {}", fileId);
       emitter.complete();
     } else {
@@ -112,7 +112,8 @@ public class PipelineEventsService {
         public void afterCommit() {
           sseEmitterRegistry.broadcast(eventDTO);
 
-          if (eventDTO.getEventType() == PipelineEventEnum.UPLOAD_REJECTED)
+          if (eventDTO.getEventType() == PipelineEventEnum.UPLOAD_REJECTED
+              || eventDTO.getEventType() == PipelineEventEnum.PIPELINE_FAILED)
             sseEmitterRegistry.completeEmitters(eventDTO.getFileId());
         }
       });

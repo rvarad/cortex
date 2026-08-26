@@ -2,25 +2,31 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { getFiles } from "@/lib/api";
+import type { FileItem } from "@/lib/types";
 import { FileCard } from "@/components/files/file-card";
 import { FileUploadDialog } from "@/components/files/file-upload-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Inbox } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-interface FileItem {
-  fileId: string;
-  fileDisplayName: string;
-  objectName: string;
-  contentType: string;
-  fileSize: number;
-  fileStatus: string;
+const POLL_INTERVAL_MS = 5000;
+
+/**
+ * A file is settled when neither of its two independent axes can still move:
+ * the pipeline (fileStatus) and playback (playbackStatus). Rejected and failed
+ * files never run normalisation, so their playbackStatus stays PENDING forever
+ * and must not be treated as work in progress.
+ */
+function isSettled(file: FileItem): boolean {
+  if (file.fileStatus === "REJECTED" || file.fileStatus === "FAILED") {
+    return true;
+  }
+  return file.fileStatus === "COMPLETED" && file.playbackStatus !== "PENDING";
 }
 
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [recentUploads, setRecentUploads] = useState<Set<string>>(new Set());
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -37,6 +43,23 @@ export default function DashboardPage() {
     fetchFiles();
   }, [fetchFiles]);
 
+  // One poll for the whole grid while anything is still moving, instead of an
+  // SSE stream per card. The tiles only need coarse status; the fine-grained
+  // event stream belongs to the pipeline history view.
+  const hasUnsettledFiles = files.some((file) => !isSettled(file));
+
+  useEffect(() => {
+    if (!hasUnsettledFiles) return;
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchFiles();
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [hasUnsettledFiles, fetchFiles]);
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -47,16 +70,7 @@ export default function DashboardPage() {
             Upload and manage your media files
           </p>
         </div>
-        <FileUploadDialog
-          onUploadComplete={fetchFiles}
-          onFileUploaded={(fileId: string) => {
-            setRecentUploads((prev) => {
-              const next = new Set(prev);
-              next.add(fileId);
-              return next;
-            });
-          }}
-        />
+        <FileUploadDialog onUploadComplete={fetchFiles} />
       </div>
 
       {/* File Grid */}
@@ -94,18 +108,7 @@ export default function DashboardPage() {
                 exit={{ opacity: 0, scale: 0.95 }}
                 layout
               >
-                <FileCard
-                  fileId={file.fileId}
-                  displayName={file.fileDisplayName}
-                  contentType={file.contentType}
-                  fileSize={file.fileSize}
-                  onMutate={fetchFiles}
-                  isRejected={file.fileStatus === "REJECTED"}
-                  showPipelineStatus={
-                    file.fileStatus !== "COMPLETED" &&
-                    file.fileStatus !== "FAILED"
-                  }
-                />
+                <FileCard file={file} onMutate={fetchFiles} />
               </motion.div>
             ))}
           </motion.div>

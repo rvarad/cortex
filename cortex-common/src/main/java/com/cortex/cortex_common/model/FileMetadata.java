@@ -82,6 +82,10 @@ public class FileMetadata {
   @Column
   private String playbackObjectName;
 
+  @Column(nullable = true, columnDefinition = "varchar(255) CHECK (rejection_reason IN ('TOO_BIG', 'TOO_LONG', 'CORRUPTED'))")
+  @Enumerated(EnumType.STRING)
+  private UploadRejectReasonEnum rejectionReason;
+
   // Defaulted to PENDING in onCreate() so existing builder call sites don't have
   // to set it. The normalization thread flips it to READY / UNAVAILABLE later via
   // a targeted @Modifying update.

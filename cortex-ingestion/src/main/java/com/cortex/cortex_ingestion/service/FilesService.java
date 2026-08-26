@@ -37,7 +37,10 @@ public class FilesService {
           .map((FileMetadata file) -> {
             return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
                 .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
+                .durationSeconds(file.getDurationSeconds())
                 .fileStatus(file.getFileStatus().name())
+                .rejectionReason(file.getRejectionReason() != null ? file.getRejectionReason().name() : null)
+                .playbackStatus(file.getPlaybackStatus() != null ? file.getPlaybackStatus().name() : null)
                 .build();
           }).collect(Collectors.toList());
 

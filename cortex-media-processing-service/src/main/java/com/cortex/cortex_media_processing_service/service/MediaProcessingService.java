@@ -37,6 +37,7 @@ import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
@@ -101,20 +102,36 @@ public class MediaProcessingService {
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
-      MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl);
-      if (manifestDTO.isCorrupted()) {
-        log.error("Media file is corrupted: {}", objectName);
-        throw new RuntimeException("Media file is corrupted: " + objectName);
-      }
-
       FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElseThrow(() -> {
         log.error("[GCSService] File metadata not found for objectName: {}", objectName);
         return new RuntimeException("File metadata not found for objectName: " + objectName);
       });
 
+      MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl, fileId);
+      if (manifestDTO.isCorrupted()) {
+        log.error("Media file is corrupted: {}", objectName);
+        gcsStorageService.deleteObject(objectName);
+        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+        fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
+        fileMetadataRepository.save(fileMetadata);
+
+        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+            PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
+                .message("This file appears to be corrupted and cannot be processed. It will be deleted.")
+                .metadata(Map.of(
+                    "contentType", fileMetadata.getContentType(),
+                    "objectName", fileMetadata.getObjectName(),
+                    "bucketName", fileMetadata.getBucketName(),
+                    "fileStatus", fileMetadata.getFileStatus().toString()))
+                .build());
+
+        return;
+      }
+
       if (manifestDTO.getDuration_s() > maxDurationInSeconds) {
         gcsStorageService.deleteObject(objectName);
         fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+        fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_LONG);
         fileMetadataRepository.save(fileMetadata);
         log.info("[MediaProcessingService] File too long: {}", objectName);
 
@@ -358,8 +375,12 @@ public class MediaProcessingService {
     return new String(data, position + 4, 4, StandardCharsets.US_ASCII);
   }
 
-  private MediaFileManifestDTO probeMediaFile(String streamUrl) {
+  private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) {
     log.info("Probing media file: {}", streamUrl);
+
+    kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
+            .message("Analyzing media file").build());
 
     try {
       ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
@@ -405,6 +426,16 @@ public class MediaProcessingService {
         }
 
         log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
+
+        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+            PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
+                .message("Media analyzed")
+                .metadata(Map.of(
+                    "hasVideo", video,
+                    "hasAudio", audio,
+                    "videoCodec", videoCodec == null ? "" : videoCodec,
+                    "durationSeconds", duration_s))
+                .build());
 
         return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
             .videoCodec(videoCodec).build();
