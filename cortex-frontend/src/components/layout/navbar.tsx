@@ -2,7 +2,7 @@
 
 import { useAuth } from "@/providers/auth-provider";
 import { getLogoutUrl } from "@/lib/api";
-import { Brain, LogOut, Search } from "lucide-react";
+import { Brain, LogOut, MessageSquare, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -44,6 +44,15 @@ export function Navbar() {
             render={<Link href="/dashboard" />}
           >
             Files
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            nativeButton={false}
+            render={<Link href="/chat" />}
+          >
+            <MessageSquare className="mr-1.5 h-4 w-4" />
+            Chat
           </Button>
           <Button
             variant="ghost"

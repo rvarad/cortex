@@ -27,9 +27,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { formatFileSize, formatDuration, formatMediaType } from "@/lib/helpers";
-import { getPlaybackUrl, ApiError } from "@/lib/api";
+import { useMediaPlayer } from "@/components/media/media-player-provider";
 import type { FileItem, RejectionReason } from "@/lib/types";
-import { toast } from "sonner";
 import { RenameDialog } from "./rename-dialog";
 import { DeleteDialog } from "./delete-dialog";
 import Link from "next/link";
@@ -40,22 +39,6 @@ const REJECTION_LABELS: Record<RejectionReason, string> = {
   CORRUPTED: "Corrupted",
 };
 
-function playbackErrorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    switch (error.status) {
-      case 425:
-        return "Playback is still being prepared. Try again in a moment.";
-      case 422:
-        return "Playback isn't available for this file.";
-      case 410:
-        return "This upload was rejected and is no longer available.";
-      case 404:
-        return "File not found.";
-    }
-  }
-  return "Couldn't start playback. Please try again.";
-}
-
 interface FileCardProps {
   file: FileItem;
   onMutate: () => void;
@@ -64,7 +47,7 @@ interface FileCardProps {
 export function FileCard({ file, onMutate }: FileCardProps) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [isOpeningPlayback, setIsOpeningPlayback] = useState(false);
+  const player = useMediaPlayer();
 
   const isFailure =
     file.fileStatus === "REJECTED" || file.fileStatus === "FAILED";
@@ -85,40 +68,20 @@ export function FileCard({ file, onMutate }: FileCardProps) {
     .filter(Boolean)
     .join(" · ");
 
-  const handlePlay = async () => {
-    // The tab must be opened synchronously inside the click handler. Browsers
-    // only honour window.open while the user gesture is still "active", and
-    // awaiting the signing request consumes that window — open first, navigate
-    // once the URL arrives. (No "noopener" here: it makes window.open return
-    // null, so opener is severed manually instead.)
-    const tab = window.open("about:blank", "_blank");
-    if (tab) tab.opener = null;
-
-    setIsOpeningPlayback(true);
-    try {
-      const { playbackUrl } = await getPlaybackUrl(file.fileId);
-
-      if (tab) {
-        tab.location.href = playbackUrl;
-      } else {
-        toast.error("Couldn't open a new tab. Allow pop-ups for this site.");
-      }
-    } catch (error) {
-      tab?.close();
-      toast.error(playbackErrorMessage(error));
-    } finally {
-      setIsOpeningPlayback(false);
-    }
-  };
-
   // Playback resolves early — normalisation runs before chunking — so a file can
   // be playable while the rest of the pipeline is still working. The two axes are
   // rendered independently. Rejected and failed files have no object left in GCS,
   // so they get no playback affordance at all.
   const playbackSlot = isFailure ? null : file.playbackStatus === "READY" ? (
-    <Button size="sm" onClick={handlePlay} disabled={isOpeningPlayback}>
-      {isOpeningPlayback ? <Loader2 className="animate-spin" /> : <Play />}
-      Play
+    <Button
+      size="sm"
+      variant={player.openFileId === file.fileId ? "secondary" : "default"}
+      onClick={() =>
+        player.open({ fileId: file.fileId, title: file.fileDisplayName })
+      }
+    >
+      <Play />
+      {player.openFileId === file.fileId ? "Playing" : "Play"}
     </Button>
   ) : file.playbackStatus === "UNAVAILABLE" ? (
     <span

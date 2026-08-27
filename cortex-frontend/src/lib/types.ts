@@ -86,6 +86,24 @@ export interface PipelineEvent {
   timestamp?: string;
 }
 
+/** One piece of a streamed answer. `cites` holds sourceNo values, never array
+ *  indices — sources arrive lazily, so arrival order means nothing. */
+export interface AnswerSegment {
+  text: string;
+  cites: number[];
+}
+
+/** A citable moment, sent on its own `source` event immediately before the
+ *  first segment that cites it. Mirrors SourceRefDTO. */
+export interface SourceRef {
+  sourceNo: number;
+  startTime: number;
+  endTime: number;
+  fileId: string;
+  fileDisplayName: string;
+  chunkIndex: number;
+}
+
 /**
  * Mirrors com.cortex.cortex_common.model.PipelineEventEnum.
  *
