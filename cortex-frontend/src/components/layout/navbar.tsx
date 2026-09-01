@@ -30,7 +30,7 @@ export function Navbar() {
           <div className="rounded-lg bg-primary/10 p-1.5">
             <Brain className="h-5 w-5 text-primary" />
           </div>
-          <span className="text-lg font-semibold tracking-tight gradient-text">
+          <span className="text-lg font-semibold tracking-tight">
             Cortex
           </span>
         </Link>

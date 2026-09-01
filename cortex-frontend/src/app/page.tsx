@@ -55,7 +55,7 @@ export default function LandingPage() {
         {/* Title */}
         <div className="space-y-3">
           <h1 className="text-5xl font-bold tracking-tight md:text-6xl">
-            <span className="gradient-text">Cortex</span>
+            Cortex
           </h1>
           <p className="max-w-md text-lg text-muted-foreground">
             AI-powered media intelligence. Upload, process, and search your
