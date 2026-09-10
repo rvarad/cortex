@@ -134,6 +134,14 @@
 			<artifactId>spring-ai-starter-model-google-genai-embedding</artifactId>
 		</dependency>
 
+		<!-- Chat sibling of the embedding starter above; same google-genai SDK.
+		     Requires spring.ai.model.chat=google-genai, otherwise the OpenAI starter
+		     also autoconfigures a ChatModel and injection becomes ambiguous. -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-model-google-genai</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-model-openai</artifactId>
