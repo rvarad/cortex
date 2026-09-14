@@ -33,6 +33,11 @@ public class SecurityConfig {
         .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/**").permitAll()
+            // Without this, every downstream error is masked. Spring forwards a 404/405/500 to
+            // /error, InternalJwtFilter skips /error so nothing populates the SecurityContext,
+            // and authenticated() then denies — the caller gets an empty 403 and the real status
+            // and message are lost.
+            .requestMatchers("/error").permitAll()
             .anyRequest().authenticated())
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .build();

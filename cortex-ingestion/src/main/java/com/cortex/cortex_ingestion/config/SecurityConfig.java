@@ -36,6 +36,11 @@ public class SecurityConfig {
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/api/v1/webhook/**").permitAll()
             .requestMatchers("/actuator/**").permitAll()
+            // Without this, every downstream error is masked. Spring forwards a 404/405/500 to
+            // /error, InternalJwtFilter skips /error so nothing populates the SecurityContext,
+            // and authenticated() then denies — the caller gets an empty 403 and the real status
+            // and message are lost.
+            .requestMatchers("/error").permitAll()
             .anyRequest().authenticated())
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .build();

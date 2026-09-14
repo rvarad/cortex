@@ -82,7 +82,8 @@ public class VertexAnswerGenerator implements AnswerGenerator {
           .responseSchema(RESPONSE_SCHEMA)
           .build();
 
-      SegmentParser parser = new SegmentParser(objectMapper, onSegmentComplete);
+      SegmentParser<AnswerSegmentDTO> parser = new SegmentParser<>(objectMapper, AnswerSegmentDTO.class,
+          onSegmentComplete);
 
       try (ResponseStream<GenerateContentResponse> stream = genAiClient.models.generateContentStream(
           MODEL_NAME, Content.fromParts(Part.fromText(prompt)), config)) {

@@ -1,16 +1,25 @@
 package com.cortex.cortex_rag_orchestration.util;
 
-import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.function.Consumer;
 
-public class SegmentParser {
+/**
+ * Cuts a half-arrived JSON stream into whole objects, emitting each one as its closing brace
+ * arrives.
+ *
+ * <p>Generic over the segment type because the two chat paths carry different cites: the original
+ * path streams {@code AnswerSegmentDTO} (integer cites), the agent streams its own raw segment
+ * (chunk-id cites, numbered later).
+ */
+public class SegmentParser<T> {
 
     private final StringBuilder buffer = new StringBuilder();
 
     private final ObjectMapper objectMapper;
 
-    private final Consumer<AnswerSegmentDTO> onSegmentComplete;
+    private final Class<T> type;
+
+    private final Consumer<T> onSegmentComplete;
 
     private int depth = 0;
 
@@ -22,8 +31,9 @@ public class SegmentParser {
     // just a literal (like the " in \"), not something special.
     private boolean escape = false;
 
-    public SegmentParser(ObjectMapper objectMapper, Consumer<AnswerSegmentDTO> onSegmentComplete) {
+    public SegmentParser(ObjectMapper objectMapper, Class<T> type, Consumer<T> onSegmentComplete) {
         this.objectMapper = objectMapper;
+        this.type = type;
         this.onSegmentComplete = onSegmentComplete;
     }
 
@@ -68,7 +78,7 @@ public class SegmentParser {
                 depth--;
                 if (depth == 0) {
                     try {
-                        AnswerSegmentDTO segment = objectMapper.readValue(buffer.toString(), AnswerSegmentDTO.class);
+                        T segment = objectMapper.readValue(buffer.toString(), type);
                         onSegmentComplete.accept(segment);
                         buffer.setLength(0);
                     } catch (Exception e) {
