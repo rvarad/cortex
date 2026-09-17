@@ -17,7 +17,8 @@ class SegmentParserTest {
 
     // Collects everything the parser emits, so we can assert on it afterwards.
     private final List<AnswerSegmentDTO> emitted = new ArrayList<>();
-    private final SegmentParser parser = new SegmentParser(new ObjectMapper(), emitted::add);
+    private final SegmentParser<AnswerSegmentDTO> parser = new SegmentParser<>(new ObjectMapper(),
+            AnswerSegmentDTO.class, emitted::add);
 
     @Test
     void reassemblesSegmentsSplitAcrossChunks() {

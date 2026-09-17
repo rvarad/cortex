@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -60,6 +61,8 @@ public class AgentService {
 
   private final LibraryTools libraryTools;
 
+  private final AttachmentLoader attachmentLoader;
+
   private final ObjectMapper objectMapper;
 
   /**
@@ -79,14 +82,29 @@ public class AgentService {
 
   /**
    * Agent policy: how to behave. What exists is described by the tools
-   * themselves.
+   * themselves, and nothing here
+   * mentions scope — reaching for search_library <em>is</em> broadening, and the
+   * caller narrates it.
+   *
+   * <p>
+   * Retrieval is conditional on purpose. The earlier version said "always search
+   * before you
+   * answer" and "answer using ONLY what the tool returns", which forced a lookup
+   * for "can you
+   * rephrase that?" and forbade answering from an earlier turn — making
+   * multi-turn impossible.
    */
   private static final String SYSTEM_INSTRUCTIONS = """
       You are Cortex, an assistant that answers questions about a user's media library.
-      You cannot see the library directly. The only way to find anything is the search_library tool,
-      so always search before you answer.
-      Answer using ONLY what the tool returns. If it returns nothing relevant, say you don't know.
-      Never use outside knowledge.
+      You cannot see the library directly.
+      If files are attached, their content is below — answer from it when it is sufficient.
+      If the attached content does not answer the question, search the library before concluding
+      you cannot answer. An attached file not containing something does not mean the library
+      doesn't either.
+      Use search_library when you need information you do not already have, and read_file when you
+      need a whole file whose id you know.
+      Answer only from the conversation, any attached content, and what the tools return.
+      Never use outside knowledge. Only say you don't know once searching has also come up empty.
       Break your answer into segments. For each segment, put the "Source id" values of the chunks
       it came from in that segment's cites, copied exactly. Use an empty list if nothing supports it.
       """;
@@ -128,14 +146,17 @@ public class AgentService {
   record RawSegment(String text, List<String> cites) {
   }
 
-  public AgentAnswerDTO answer(List<Message> conversation, String userId) {
+  public AgentAnswerDTO answer(List<Message> conversation, String userId, List<UUID> fileIds) {
 
     // Tools add to this as they search; we read it once the answer is in.
     // Concurrent because
     // Spring AI's own source says tool execution is only "currently" synchronous.
     Map<UUID, SourceRefDTO> retrieved = new ConcurrentHashMap<>();
 
-    Prompt prompt = new Prompt(withSystemInstructions(conversation), options(userId, retrieved));
+    LoadedAttachments attachments = attachmentLoader.load(
+        fileIds, lastQuestion(conversation), userId, retrieved);
+
+    Prompt prompt = new Prompt(withContext(conversation, attachments), options(userId, retrieved));
 
     ChatResponse response = call(prompt);
 
@@ -189,12 +210,22 @@ public class AgentService {
    * layer can sit in
    * between and persist segments while they stream.
    */
-  public void answerStream(List<Message> conversation, String userId, Consumer<AgentEvent> onEvent) {
+  public void answerStream(List<Message> conversation, String userId, List<UUID> fileIds,
+      Consumer<AgentEvent> onEvent) {
 
     Map<UUID, SourceRefDTO> retrieved = new ConcurrentHashMap<>();
     CitationNumberer numberer = new CitationNumberer(retrieved);
 
-    Prompt prompt = new Prompt(withSystemInstructions(conversation), options(userId, retrieved));
+    boolean hasAttachments = fileIds != null && !fileIds.isEmpty();
+
+    if (hasAttachments) {
+      onEvent.accept(new StepEvent("Reading " + fileIds.size() + " attached file(s)…"));
+    }
+
+    LoadedAttachments attachments = attachmentLoader.load(
+        fileIds, lastQuestion(conversation), userId, retrieved);
+
+    Prompt prompt = new Prompt(withContext(conversation, attachments), options(userId, retrieved));
 
     SegmentParser<RawSegment> parser = new SegmentParser<>(objectMapper, RawSegment.class,
         raw -> emitSegment(raw, numberer, onEvent));
@@ -223,7 +254,7 @@ public class AgentService {
 
       // Told to the user before the tools run, so the wait is legible while it
       // happens.
-      calls.forEach(call -> onEvent.accept(new StepEvent(stepLabel(call))));
+      calls.forEach(call -> onEvent.accept(new StepEvent(stepLabel(call, hasAttachments))));
 
       toolCallsCount += calls.size();
 
@@ -308,9 +339,18 @@ public class AgentService {
     onEvent.accept(new SegmentEvent(segment(raw.text(), cites)));
   }
 
-  private String stepLabel(ToolCall call) {
+  /**
+   * The broadening is narrated by code, from state we hold — the model is never
+   * told about scope,
+   * so it has nothing to forget or misreport. With attachments present, reaching
+   * for the library
+   * <em>is</em> widening beyond them.
+   */
+  private String stepLabel(ToolCall call, boolean hasAttachments) {
     return switch (call.name()) {
-      case "search_library" -> "Searching library…";
+      case "search_library" -> hasAttachments
+          ? "Not in your attached files — searching the whole library…"
+          : "Searching library…";
       case "read_file" -> "Reading file…";
       default -> "Working…";
     };
@@ -413,11 +453,55 @@ public class AgentService {
     return chatModel.call(prompt);
   }
 
-  private List<Message> withSystemInstructions(List<Message> conversation) {
+  /**
+   * System policy, then any attached content, then the conversation.
+   *
+   * <p>
+   * Attachments go in as their own message rather than into {@code conversation},
+   * because they
+   * belong to this turn only. Slice 2 replays prior questions and answers; it
+   * must never replay
+   * content the user attached three messages ago.
+   *
+   * <p>
+   * With no attachments this is byte-identical to what came before.
+   */
+  private List<Message> withContext(List<Message> conversation, LoadedAttachments attachments) {
     List<Message> messages = new ArrayList<>();
+
     messages.add(new SystemMessage(SYSTEM_INSTRUCTIONS));
+
+    if (!attachments.isEmpty()) {
+      messages.add(new UserMessage(attachmentMessage(attachments)));
+    }
+
     messages.addAll(conversation);
+
     return messages;
+  }
+
+  private String attachmentMessage(LoadedAttachments attachments) {
+    StringBuilder message = new StringBuilder("Files attached to this message:\n\n");
+
+    message.append(attachments.text());
+
+    // Told plainly, so the model can act on it — a file missing without explanation
+    // is worse than
+    // one it knows it cannot see.
+    attachments.notes().forEach(note -> message.append("Note: ").append(note).append("\n"));
+
+    return message.toString();
+  }
+
+  /** What to search for if an attachment is too big to read whole. */
+  private String lastQuestion(List<Message> conversation) {
+    for (int i = conversation.size() - 1; i >= 0; i--) {
+      if (conversation.get(i) instanceof UserMessage user) {
+        return user.getText();
+      }
+    }
+
+    return "";
   }
 
   /**
@@ -428,6 +512,12 @@ public class AgentService {
    */
   private GoogleGenAiChatOptions options(String userId, Map<UUID, SourceRefDTO> retrieved) {
     return GoogleGenAiChatOptions.builder()
+        // Low, on purpose. The default is tuned for varied prose, but the decisions
+        // this loop
+        // depends on — "is the attached content enough, or do I search?" — should not
+        // be a coin
+        // flip. At the default it escalated on 4 of 5 identical requests.
+        .temperature(0.3)
         .toolCallbacks(ToolCallbacks.from(libraryTools))
         .toolContext(Map.of(
             LibraryTools.USER_ID, userId,

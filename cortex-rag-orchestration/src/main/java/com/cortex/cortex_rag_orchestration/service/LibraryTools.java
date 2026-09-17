@@ -94,26 +94,10 @@ public class LibraryTools {
       return NOTHING_FOUND;
     }
 
-    remember(results, retrieved(toolContext));
+    // false: these were found by searching, not attached by the user.
+    SourceRefs.remember(retrieved(toolContext), results, false);
 
     return sourceFormatter.formatWithIds(results);
-  }
-
-  /**
-   * Metadata only. The transcript and visual summary are the bulk of a chunk (~3 KB against ~150
-   * bytes for everything else) and the loop never needs them again — they have already gone to the
-   * model as text. {@code sourceNo} is left unset; numbers are assigned after the answer arrives.
-   */
-  private void remember(List<SearchResultDTO> results, Map<UUID, SourceRefDTO> retrieved) {
-    for (SearchResultDTO result : results) {
-      retrieved.putIfAbsent(result.getId(), SourceRefDTO.builder()
-          .fileId(result.getFileId())
-          .fileDisplayName(result.getFileDisplayName())
-          .startTime(result.getStartTime())
-          .endTime(result.getEndTime())
-          .chunkIndex(result.getChunkIndex())
-          .build());
-    }
   }
 
   /**

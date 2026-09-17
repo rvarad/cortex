@@ -84,7 +84,7 @@ public class ChatController {
     String userId = authentication.getName();
 
     AgentAnswerDTO answer = agentService.answer(
-        List.of(new UserMessage(question.getQuestion())), userId);
+        List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds());
 
     return ResponseEntity.ok(answer);
   }
@@ -106,7 +106,7 @@ public class ChatController {
     Thread.startVirtualThread(() -> {
       try {
         agentService.answerStream(
-            List.of(new UserMessage(question.getQuestion())), userId,
+            List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds(),
             event -> send(emitter, event));
 
         // An explicit end, so the client can tell "finished" from "connection dropped".

@@ -68,6 +68,9 @@ class CitationNumberer {
         .startTime(found.getStartTime())
         .endTime(found.getEndTime())
         .chunkIndex(found.getChunkIndex())
+        // Carried through, not recomputed — this is the only copy that reaches the client, so
+        // dropping it here would silently unmark every attached source.
+        .attached(found.isAttached())
         .build());
 
     return Optional.of(sourceNo);

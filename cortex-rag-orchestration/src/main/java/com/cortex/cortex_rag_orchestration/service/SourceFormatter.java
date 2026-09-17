@@ -62,6 +62,7 @@ public class SourceFormatter {
 
     for (SearchResultDTO result : searchResults) {
       context.append("{\n").append("Source id: ").append(result.getId()).append("\n");
+      context.append("fileId: ").append(result.getFileId()).append("\n");
       context.append("fileName: ").append(result.getFileDisplayName()).append("\n");
       context.append("startTime: ").append(result.getStartTime()).append("\n");
       context.append("endTime: ").append(result.getEndTime()).append("\n");
