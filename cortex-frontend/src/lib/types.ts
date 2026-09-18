@@ -102,6 +102,10 @@ export interface SourceRef {
   fileId: string;
   fileDisplayName: string;
   chunkIndex: number;
+  /** True when the chunk came from a file attached to the message, false when
+   *  the agent found it by searching the library. Where it came from, not what
+   *  the model claims — so provenance can be marked per citation. */
+  attached: boolean;
 }
 
 /**

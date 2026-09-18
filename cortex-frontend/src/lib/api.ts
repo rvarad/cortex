@@ -187,16 +187,22 @@ export function subscribeToPipelineEvents(
 // ============ Chat ============
 
 export interface ChatStreamHandlers {
-  onSegment: (segment: AnswerSegment) => void;
+  /** Something the agent is doing, in words — "Searching library…". */
+  onStep: (label: string) => void;
   onSource: (source: SourceRef) => void;
+  onSegment: (segment: AnswerSegment) => void;
 }
 
 /**
  * Parses one SSE frame — the text between two blank lines — and routes it.
- * Unknown event names are ignored rather than thrown on, so a new backend
- * event type can't break an older client.
+ * Returns true when the frame was the terminal `done` event. Unknown event
+ * names are ignored rather than thrown on, so a new backend event type can't
+ * break an older client.
  */
-function dispatchChatFrame(frame: string, handlers: ChatStreamHandlers) {
+function dispatchChatFrame(
+  frame: string,
+  handlers: ChatStreamHandlers
+): boolean {
   let eventName = "message";
   const dataLines: string[] = [];
 
@@ -212,43 +218,58 @@ function dispatchChatFrame(frame: string, handlers: ChatStreamHandlers) {
     else if (field === "data") dataLines.push(value);
   }
 
-  if (dataLines.length === 0) return;
+  if (eventName === "done") return true;
+  if (dataLines.length === 0) return false;
 
   let payload: unknown;
   try {
     payload = JSON.parse(dataLines.join("\n"));
   } catch {
-    return;
+    return false;
   }
 
-  if (eventName === "segment") {
-    const segment = payload as AnswerSegment;
-    handlers.onSegment({
-      text: segment.text ?? "",
-      cites: Array.isArray(segment.cites) ? segment.cites : [],
-    });
-  } else if (eventName === "source") {
-    handlers.onSource(payload as SourceRef);
+  switch (eventName) {
+    case "step": {
+      const step = payload as { label?: unknown };
+      if (typeof step.label === "string") handlers.onStep(step.label);
+      break;
+    }
+    case "source":
+      handlers.onSource(payload as SourceRef);
+      break;
+    case "segment": {
+      const segment = payload as AnswerSegment;
+      handlers.onSegment({
+        text: segment.text ?? "",
+        cites: Array.isArray(segment.cites) ? segment.cites : [],
+      });
+      break;
+    }
   }
+
+  return false;
 }
 
 /**
- * Streams a grounded answer.
+ * Streams an agentic answer: `step` events as the agent searches and reads,
+ * then `source`/`segment` pairs as it writes, then `done`.
  *
  * This endpoint is a POST and EventSource can only issue GET requests, so
  * `subscribeToPipelineEvents` cannot be reused here. Frames are read off a
  * ReadableStream and parsed by hand, buffering across chunk boundaries because
  * a single read can split one frame or carry several.
  *
- * Resolves when the server closes the stream; rejects on a non-2xx response or
- * an aborted signal.
+ * Resolves to true when the server sent `done`, false when the stream closed
+ * without it — which is how a cut-off answer (emitter timeout, crash mid-run)
+ * is told apart from a finished one. Rejects on a non-2xx response or an
+ * aborted signal.
  */
-export async function streamChat(
-  body: { question: string; fileId?: string },
+export async function streamAgentChat(
+  body: { question: string; fileIds: string[] },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal
-): Promise<void> {
-  const response = await fetch(`${API_URL}/chats/stream`, {
+): Promise<boolean> {
+  const response = await fetch(`${API_URL}/chats/agent/stream`, {
     method: "POST",
     credentials: "include",
     headers: {
@@ -270,6 +291,7 @@ export async function streamChat(
 
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
+  let completed = false;
 
   try {
     for (;;) {
@@ -280,7 +302,9 @@ export async function streamChat(
 
       let boundary = buffer.indexOf("\n\n");
       while (boundary !== -1) {
-        dispatchChatFrame(buffer.slice(0, boundary), handlers);
+        if (dispatchChatFrame(buffer.slice(0, boundary), handlers)) {
+          completed = true;
+        }
         buffer = buffer.slice(boundary + 2);
         boundary = buffer.indexOf("\n\n");
       }
@@ -288,12 +312,14 @@ export async function streamChat(
 
     // A well-behaved server ends on a blank line, but don't lose a final frame
     // if the connection closes without one.
-    if (buffer.trim().length > 0) {
-      dispatchChatFrame(buffer, handlers);
+    if (buffer.trim().length > 0 && dispatchChatFrame(buffer, handlers)) {
+      completed = true;
     }
   } finally {
     reader.releaseLock();
   }
+
+  return completed;
 }
 
 // ============ Search ============
