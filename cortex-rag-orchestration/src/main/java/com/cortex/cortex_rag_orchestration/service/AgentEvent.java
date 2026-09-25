@@ -10,5 +10,5 @@ package com.cortex.cortex_rag_orchestration.service;
  * 2's conversation layer can sit between the agent and the controller and persist segments as they
  * stream.
  */
-public sealed interface AgentEvent permits StepEvent, SourceEvent, SegmentEvent {
+public sealed interface AgentEvent permits StepEvent, SourceEvent, SegmentEvent, ToolCallEvent {
 }

@@ -10,9 +10,11 @@ import com.google.common.util.concurrent.RateLimiter;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -78,7 +80,16 @@ public class AgentService {
    */
   private static final int MAX_ITERATIONS = 5;
 
+  /** Shared by every call so the final answer at the cap is made the same way as any other. */
+  private static final double TEMPERATURE = 0.3;
+
   private static final String GAVE_UP = "I wasn't able to finish looking into that. Please try asking more specifically.";
+
+  /** Sent at the cap, with the tools taken away, so the turn ends in an answer rather than nothing. */
+  private static final String ANSWER_NOW = """
+      You've used all the searches available for this question. Answer now, using only what's \
+      already in front of you: the conversation, any attached files, and the tool results above. If \
+      something couldn't be found, say what you looked for and that it wasn't there.""";
 
   /**
    * Agent policy: how to behave. What exists is described by the tools
@@ -93,20 +104,140 @@ public class AgentService {
    * for "can you
    * rephrase that?" and forbade answering from an earlier turn — making
    * multi-turn impossible.
+   *
+   * <p>
+   * Written to explain the reason behind each rule rather than shout it, and with
+   * worked examples — the Anthropic and Gemini prompting guides both name these
+   * as the most reliable levers. The version before this stacked three "search
+   * before you conclude" lines against one weak line about the conversation, and
+   * the model searched the library five times for "why did you say that?".
+   *
+   * <p>
+   * The examples cite {@code <Source id>} as a placeholder. If the model ever
+   * copies it literally, {@link CitationNumberer} drops it and the dropped-cite
+   * warning shows it.
    */
   private static final String SYSTEM_INSTRUCTIONS = """
-      You are Cortex, an assistant that answers questions about a user's media library.
-      You cannot see the library directly.
-      If files are attached, their content is below — answer from it when it is sufficient.
-      If the attached content does not answer the question, search the library before concluding
-      you cannot answer. An attached file not containing something does not mean the library
-      doesn't either.
-      Use search_library when you need information you do not already have, and read_file when you
-      need a whole file whose id you know.
-      Answer only from the conversation, any attached content, and what the tools return.
-      Never use outside knowledge. Only say you don't know once searching has also come up empty.
-      Break your answer into segments. For each segment, put the "Source id" values of the chunks
-      it came from in that segment's cites, copied exactly. Use an empty list if nothing supports it.
+      You are Cortex. You're in a conversation with a user about their media library: videos and
+      audio they uploaded, which have been transcribed and described. You can't see the library
+      directly; you reach it through tools.
+
+      <how_to_respond>
+      Every message is part of an ongoing conversation. Before doing anything, work out what this
+      message is asking and where the answer is. Check these in order:
+
+      1. The conversation. Many messages are about what's already been said: a follow-up, a request
+         to shorten or rephrase, "?" or "huh?" meaning your last answer wasn't clear, a question about
+         your own earlier answer, thanks, or "what can you do?". Answer these from the conversation.
+         Don't search the library for them: it holds the user's recordings, not this conversation.
+
+         People rarely say "earlier". They say "that", "him", "the second one", "the budget thing",
+         "again", or use a name as if you both already know it. When a message points at something
+         like this, find it in the turns you can see. If it isn't there and a note says earlier turns
+         are hidden, call recall_conversation before searching the library. That's where the thing
+         they mean is, and it's quicker than a search. If the first page doesn't have it, read the
+         next one.
+
+      2. Attached files. If the user attached files to this message, their content appears just
+         before it. Answer from them when they contain the answer.
+
+      3. The library. If the answer isn't in the conversation or the attached files, search. The
+         attached files are only the part of the library the user pointed at, and the rest can still
+         have the answer. So before telling the user something isn't there, search the library at
+         least once.
+
+      If a message is unclear and the conversation doesn't make it clear, ask one short question
+      instead of guessing or searching.
+      </how_to_respond>
+
+      <tools>
+      - search_library finds passages across the whole library. Search with the key words, not the
+        whole sentence. If a search misses, try a different wording once or twice. If it still isn't
+        there, say so. More searches with the same idea won't find it.
+      - read_file reads one whole file when you have its fileId from an earlier result.
+      - recall_conversation reads turns of this conversation that aren't shown. Use it when the user
+        refers to something you can't find in the turns you can see.
+      </tools>
+
+      <history>
+      Earlier turns show the tools you called while answering them, in order. Their results aren't
+      kept between turns, so each one shows a note in its place. If you need a result again, call the
+      tool again. A user message may say which files were attached to it; your answer to that message
+      was based on those files. A user message marked "No answer was given" is one you didn't answer.
+      It failed or the user stopped it, so read what follows it in that light.
+      </history>
+
+      <grounding>
+      Answer only from the conversation, the attached files and what the tools return. Don't add
+      outside knowledge. The user is asking about their own recordings, and an answer from general
+      knowledge would look like it came from their files when it didn't.
+      </grounding>
+
+      <style>
+      Write like a colleague who has watched the recordings and is telling the user what's in them.
+      Use full sentences and give the context that makes a fact useful: who said it, what led up to
+      it, what came right after, which recording, and roughly when (the passages give start times in
+      seconds; say "about four minutes in", not "240.0"). A direct question usually takes two to four
+      sentences. A summary or "tell me about" question can take a few short paragraphs. Don't pad:
+      don't restate the question or open with filler.
+      </style>
+
+      <answer_format>
+      Reply with a list of segments, each with "text" and "cites". In "cites", put the "Source id" of
+      the passages that support that segment, copied exactly: only the one to three that most directly
+      support it. A longer answer is more segments, each with its own cites, not one segment with many.
+      A segment with no supporting passage, like a clarifying question or a reply about the conversation
+      itself, has empty cites.
+
+      The passages you get are transcripts and descriptions of the user's recordings. Talk about them
+      as the recordings they are: "budget-review.mp4 doesn't mention Priya", "in the standup
+      recording…". Don't say "the text", "the transcript", "the passages" or "the provided content".
+      The user uploaded recordings, not text, and those words mean nothing to them.
+      </answer_format>
+
+      <examples>
+      <example>
+      User: what did they decide about the launch?
+      You: [{"text": "They agreed to push the launch back to the second week of March.", "cites": ["<Source id>"]}]
+      User: ?
+      You: [{"text": "Sorry, that was too brief. In the planning call, the team agreed to move the launch from late February to the second week of March.", "cites": []},
+            {"text": "The reason was testing: Dana said QA needed about two more weeks to finish regression runs, and nobody pushed back, so the new date stood.", "cites": []}]
+      </example>
+
+      <example>
+      (Attached: standup-0915.mp4, which never mentions Priya.)
+      User: what did Priya say about the budget?
+      You: call search_library with "Priya budget"
+      Result: a passage from budget-review.mp4 where Priya talks about the Q3 budget.
+      You: [{"text": "Priya isn't in standup-0915.mp4, but she talks about the budget in budget-review.mp4.", "cites": []},
+            {"text": "About six minutes in, she says the Q3 budget is frozen until October while finance reconciles the overspend from the summer campaign.", "cites": ["<Source id>"]},
+            {"text": "She adds that anything already approved can go ahead, but new requests will wait until the freeze lifts.", "cites": ["<Source id>"]}]
+      </example>
+
+      <example>
+      User: what did Marcus do?
+      You: [{"text": "I searched your library and couldn't find anyone called Marcus. Is the name spelled differently in the recording?", "cites": []}]
+      User: why couldn't you find him?
+      You: [{"text": "I searched for \\"Marcus\\" and nothing in your library matched. Transcripts spell names the way they sound, so if it's written differently in the recording, say \\"Markus\\", the search wouldn't find it. Try asking with another spelling, or tell me something else he talked about and I'll search for that.", "cites": []}]
+      </example>
+
+      <example>
+      User: who presented in the all-hands?
+      You: [{"text": "Two people presented in the all-hands. Ana opened with hiring: three open roles, and a new onboarding buddy system starting next month.", "cites": ["<Source id>"]},
+            {"text": "Joel followed with the roadmap and walked through what's planned for the next two quarters.", "cites": ["<Source id>"]}]
+      User: what did the second one say about Q4?
+      You: call search_library with "Joel roadmap Q4"
+      </example>
+
+      <example>
+      (A note says earlier turns are hidden. None of the turns shown mention a delay.)
+      User: did he ever explain why it slipped?
+      You: call recall_conversation with page 0
+      Result: an earlier turn where you told the user Joel announced the mobile app release was
+      delayed to Q1.
+      You: call search_library with "Joel mobile app delay reason"
+      </example>
+      </examples>
       """;
 
   /**
@@ -146,7 +277,17 @@ public class AgentService {
   record RawSegment(String text, List<String> cites) {
   }
 
-  public AgentAnswerDTO answer(List<Message> conversation, String userId, List<UUID> fileIds) {
+  /**
+   * @param conversation   prior turns, if any, then the question — the last
+   *                       message must be the
+   *                       user's question
+   * @param conversationId the stored conversation this question belongs to, so
+   *                       the recall tool
+   *                       can read its earlier turns; null on the stateless path,
+   *                       where there is nothing to recall
+   */
+  public AgentAnswerDTO answer(List<Message> conversation, String userId, List<UUID> fileIds,
+      UUID conversationId) {
 
     // Tools add to this as they search; we read it once the answer is in.
     // Concurrent because
@@ -156,7 +297,8 @@ public class AgentService {
     LoadedAttachments attachments = attachmentLoader.load(
         fileIds, lastQuestion(conversation), userId, retrieved);
 
-    Prompt prompt = new Prompt(withContext(conversation, attachments), options(userId, retrieved));
+    Prompt prompt = new Prompt(withContext(conversation, attachments),
+        options(userId, conversationId, retrieved));
 
     ChatResponse response = call(prompt);
 
@@ -204,14 +346,23 @@ public class AgentService {
    * The same loop, reporting as it goes instead of at the end.
    *
    * <p>
-   * Nothing is returned: steps, sources and segments all leave through
-   * {@code onEvent} as they
+   * Steps, sources and segments all leave through {@code onEvent} as they
    * happen. A callback rather than the response object, so Slice 2's conversation
    * layer can sit in
    * between and persist segments while they stream.
+   *
+   * @return true when the model produced its answer, false when the loop was
+   *         stopped by its iteration cap — the same fact as
+   *         {@code AgentAnswerDTO.hitIterationCap} on the blocking path,
+   *         inverted.
+   *         Either way the callback has already received everything that was
+   *         sent.
+   *         The caller needs this because a capped run returns normally, and
+   *         whatever streamed before the cap is a half answer, not a finished
+   *         one.
    */
-  public void answerStream(List<Message> conversation, String userId, List<UUID> fileIds,
-      Consumer<AgentEvent> onEvent) {
+  public boolean answerStream(List<Message> conversation, String userId, List<UUID> fileIds,
+      UUID conversationId, Consumer<AgentEvent> onEvent) {
 
     Map<UUID, SourceRefDTO> retrieved = new ConcurrentHashMap<>();
     CitationNumberer numberer = new CitationNumberer(retrieved);
@@ -219,13 +370,14 @@ public class AgentService {
     boolean hasAttachments = fileIds != null && !fileIds.isEmpty();
 
     if (hasAttachments) {
-      onEvent.accept(new StepEvent("Reading " + fileIds.size() + " attached file(s)…"));
+      onEvent.accept(new StepEvent("Reading attached context…"));
     }
 
     LoadedAttachments attachments = attachmentLoader.load(
         fileIds, lastQuestion(conversation), userId, retrieved);
 
-    Prompt prompt = new Prompt(withContext(conversation, attachments), options(userId, retrieved));
+    Prompt prompt = new Prompt(withContext(conversation, attachments),
+        options(userId, conversationId, retrieved));
 
     SegmentParser<RawSegment> parser = new SegmentParser<>(objectMapper, RawSegment.class,
         raw -> emitSegment(raw, numberer, onEvent));
@@ -244,17 +396,18 @@ public class AgentService {
       List<ToolCall> calls = toolCall.getResult().getOutput().getToolCalls();
 
       if (++iterations > MAX_ITERATIONS) {
-        log.warn("[agent] hit the {}-iteration cap; {} tool call(s) executed, {} more requested; giving up",
-            MAX_ITERATIONS, toolCallsCount, calls.size());
-        // Segments may already have gone out. Say it stopped early rather than let the
-        // partial answer look finished.
-        onEvent.accept(new StepEvent(GAVE_UP));
-        return;
+        log.warn("[agent] hit the {}-iteration cap; {} tool call(s) executed, {} more requested; "
+            + "answering from what was gathered", MAX_ITERATIONS, toolCallsCount, calls.size());
+        return answerAtCap(prompt, parser, onEvent, iterations - 1, toolCallsCount);
       }
 
-      // Told to the user before the tools run, so the wait is legible while it
-      // happens.
-      calls.forEach(call -> onEvent.accept(new StepEvent(stepLabel(call, hasAttachments))));
+      // Told before the tools run, so the wait is legible while it happens. Every
+      // call is recorded; only some are shown — recording and showing are separate.
+      int round = iterations;
+      for (ToolCall call : calls) {
+        onEvent.accept(new ToolCallEvent(round, call.name(), call.arguments()));
+        stepLabel(call, hasAttachments).ifPresent(label -> onEvent.accept(new StepEvent(label)));
+      }
 
       toolCallsCount += calls.size();
 
@@ -266,6 +419,42 @@ public class AgentService {
     warnOnDropped(numberer);
 
     log.info("[agent] streamed answer after {} tool round(s), {} tool call(s)", iterations, toolCallsCount);
+
+    return true;
+  }
+
+  /**
+   * One last call, with no tools declared, so the model has to answer from what it
+   * already gathered instead of the turn ending with nothing (plan §8.9).
+   *
+   * <p>
+   * {@code prompt} holds the history up to the last round that actually ran: the
+   * request that tripped the cap was never executed, so it was never appended.
+   * Spring AI 1.1.2 has no way to set Gemini's function-calling mode, so leaving
+   * the tools off the request is the only way to make a call impossible.
+   *
+   * @return true if the model answered — a real answer on real evidence, so the
+   *         caller saves it; false if it somehow still asked for a tool
+   */
+  private boolean answerAtCap(Prompt prompt, SegmentParser<RawSegment> parser,
+      Consumer<AgentEvent> onEvent, int rounds, int toolCallsCount) {
+
+    List<Message> messages = new ArrayList<>(prompt.getInstructions());
+    messages.add(new UserMessage(ANSWER_NOW));
+
+    ChatResponse toolCall = streamRound(new Prompt(messages, finalOptions()), parser, onEvent);
+
+    if (toolCall != null) {
+      log.warn("[agent] asked for a tool with none declared; giving up");
+      // Segments may already have gone out. Say it stopped early rather than let the
+      // partial answer look finished.
+      onEvent.accept(new StepEvent(GAVE_UP));
+      return false;
+    }
+
+    log.info("[agent] answered at the cap after {} tool round(s), {} tool call(s)", rounds, toolCallsCount);
+
+    return true;
   }
 
   /**
@@ -345,14 +534,19 @@ public class AgentService {
    * so it has nothing to forget or misreport. With attachments present, reaching
    * for the library
    * <em>is</em> widening beyond them.
+   *
+   * <p>
+   * Only reading and searching are shown. Anything else — looking back through the
+   * conversation included — is the model working out its answer, and the user
+   * sees "Thinking…" for it, which the frontend shows whenever no step is running.
    */
-  private String stepLabel(ToolCall call, boolean hasAttachments) {
+  private Optional<String> stepLabel(ToolCall call, boolean hasAttachments) {
     return switch (call.name()) {
-      case "search_library" -> hasAttachments
+      case "search_library" -> Optional.of(hasAttachments
           ? "Not in your attached files — searching the whole library…"
-          : "Searching library…";
-      case "read_file" -> "Reading file…";
-      default -> "Working…";
+          : "Searching library…");
+      case "read_file" -> Optional.of("Reading file…");
+      default -> Optional.empty();
     };
   }
 
@@ -454,41 +648,65 @@ public class AgentService {
   }
 
   /**
-   * System policy, then any attached content, then the conversation.
+   * System policy, then the prior turns, then any attached content, then the
+   * question.
    *
    * <p>
    * Attachments go in as their own message rather than into {@code conversation},
    * because they
    * belong to this turn only. Slice 2 replays prior questions and answers; it
    * must never replay
-   * content the user attached three messages ago.
+   * content the user attached three messages ago. The block says "files attached
+   * to this message", so it sits directly before that message — not before the
+   * history.
    *
    * <p>
-   * With no attachments this is byte-identical to what came before.
+   * With a one-message conversation and no attachments this is byte-identical to
+   * what came before.
    */
   private List<Message> withContext(List<Message> conversation, LoadedAttachments attachments) {
     List<Message> messages = new ArrayList<>();
 
     messages.add(new SystemMessage(SYSTEM_INSTRUCTIONS));
 
+    int question = conversation.size() - 1;
+
+    messages.addAll(conversation.subList(0, question));
+
     if (!attachments.isEmpty()) {
       messages.add(new UserMessage(attachmentMessage(attachments)));
     }
 
-    messages.addAll(conversation);
+    messages.add(conversation.get(question));
 
     return messages;
   }
 
+  /**
+   * The attached content as one block: a header naming the files, the chunks, any
+   * notes, and a closing line. The Gemini prompting guide recommends a clear
+   * transition after a long block of context and before the question; without
+   * one, the question can read as part of the attachment.
+   */
   private String attachmentMessage(LoadedAttachments attachments) {
-    StringBuilder message = new StringBuilder("Files attached to this message:\n\n");
+    StringBuilder message = new StringBuilder();
 
-    message.append(attachments.text());
+    if (attachments.fileNames().isEmpty()) {
+      // Nothing fit or nothing was available — only notes follow.
+      message.append("Files attached to this message could not be included:\n\n");
+    } else {
+      message.append("Files attached to this message: ")
+          .append(String.join(", ", attachments.fileNames()))
+          .append("\n\n")
+          .append(attachments.text());
+    }
 
     // Told plainly, so the model can act on it — a file missing without explanation
     // is worse than
     // one it knows it cannot see.
     attachments.notes().forEach(note -> message.append("Note: ").append(note).append("\n"));
+
+    message.append("\nEnd of attached files. The user's message follows.");
 
     return message.toString();
   }
@@ -510,18 +728,42 @@ public class AgentService {
    * and its own retrieved map, so the options object cannot be shared between
    * requests.
    */
-  private GoogleGenAiChatOptions options(String userId, Map<UUID, SourceRefDTO> retrieved) {
+  private GoogleGenAiChatOptions options(String userId, UUID conversationId,
+      Map<UUID, SourceRefDTO> retrieved) {
+
+    // Not Map.of: conversationId is absent on the stateless path, and Map.of
+    // rejects
+    // nulls.
+    Map<String, Object> toolContext = new HashMap<>();
+    toolContext.put(LibraryTools.USER_ID, userId);
+    toolContext.put(LibraryTools.RETRIEVED, retrieved);
+    if (conversationId != null) {
+      toolContext.put(LibraryTools.CONVERSATION_ID, conversationId);
+    }
+
     return GoogleGenAiChatOptions.builder()
         // Low, on purpose. The default is tuned for varied prose, but the decisions
         // this loop
         // depends on — "is the attached content enough, or do I search?" — should not
         // be a coin
         // flip. At the default it escalated on 4 of 5 identical requests.
-        .temperature(0.3)
+        .temperature(TEMPERATURE)
         .toolCallbacks(ToolCallbacks.from(libraryTools))
-        .toolContext(Map.of(
-            LibraryTools.USER_ID, userId,
-            LibraryTools.RETRIEVED, retrieved))
+        .toolContext(toolContext)
+        .internalToolExecutionEnabled(false)
+        .responseMimeType("application/json")
+        .responseSchema(RESPONSE_SCHEMA)
+        .build();
+  }
+
+  /**
+   * The same answer settings as {@link #options}, with no tools. Used for the one
+   * call made at the cap: with nothing declared, the model cannot ask for a tool
+   * and has to answer. No tool context either — nothing can run to read it.
+   */
+  private GoogleGenAiChatOptions finalOptions() {
+    return GoogleGenAiChatOptions.builder()
+        .temperature(TEMPERATURE)
         .internalToolExecutionEnabled(false)
         .responseMimeType("application/json")
         .responseSchema(RESPONSE_SCHEMA)

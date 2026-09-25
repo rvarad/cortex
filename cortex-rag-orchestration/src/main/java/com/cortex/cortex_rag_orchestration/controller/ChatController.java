@@ -7,15 +7,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.cortex.cortex_common.dto.ChatAnswerDTO;
 import com.cortex.cortex_common.dto.ChatQuestionDTO;
 import com.cortex.cortex_common.dto.AgentAnswerDTO;
-import com.cortex.cortex_rag_orchestration.service.AgentEvent;
 import com.cortex.cortex_rag_orchestration.service.AgentService;
 import com.cortex.cortex_rag_orchestration.service.ChatService;
-import com.cortex.cortex_rag_orchestration.service.SegmentEvent;
-import com.cortex.cortex_rag_orchestration.service.SourceEvent;
-import com.cortex.cortex_rag_orchestration.service.StepEvent;
-
-import java.io.IOException;
-import java.util.Map;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -71,12 +64,15 @@ public class ChatController {
 
 
   /**
-   * The agentic path. Same auth and body as {@link #chat}, but the answer is planned: the agent
-   * searches, judges what came back, and may search again before answering.
+   * The agentic path, stateless. Same auth and body as {@link #chat}, but the answer is planned:
+   * the agent searches, judges what came back, and may search again before answering.
    *
-   * <p>Slice 1 sends a single question. The conversation is a list because Slice 2's conversation
-   * layer will prepend prior turns to the identical call.
+   * @deprecated Kept as the no-database way to hit the agent by {@code curl} — the §11-style
+   *     verification path. Nothing in the frontend calls it. The real path is
+   *     {@link ConversationController}, which persists and replays turns; this one has no
+   *     conversation, so nothing to recall.
    */
+  @Deprecated
   @PostMapping("/agent")
   public ResponseEntity<AgentAnswerDTO> agentChat(@Valid @RequestBody ChatQuestionDTO question,
       Authentication authentication) {
@@ -84,18 +80,22 @@ public class ChatController {
     String userId = authentication.getName();
 
     AgentAnswerDTO answer = agentService.answer(
-        List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds());
+        List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds(), null);
 
     return ResponseEntity.ok(answer);
   }
 
   /**
-   * The agentic path, streamed. Same answer as {@link #agentChat}, reported as it happens: a
-   * {@code step} per tool call, then sources and segments, then {@code done}.
+   * The agentic path, streamed and stateless. Same answer as {@link #agentChat}, reported as it
+   * happens: a {@code step} per tool call, then sources and segments, then {@code done}.
    *
    * <p>Three minutes rather than the older path's sixty seconds — an agent makes several model
    * calls, and the emitter cuts off silently when it expires.
+   *
+   * @deprecated Same reason as {@link #agentChat}: the {@code curl} path. Conversations are the
+   *     real one.
    */
+  @Deprecated
   @PostMapping(value = "/agent/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter agentStream(@Valid @RequestBody ChatQuestionDTO question,
       Authentication authentication) {
@@ -106,11 +106,10 @@ public class ChatController {
     Thread.startVirtualThread(() -> {
       try {
         agentService.answerStream(
-            List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds(),
-            event -> send(emitter, event));
+            List.of(new UserMessage(question.getQuestion())), userId, question.getFileIds(), null,
+            event -> SseEvents.send(emitter, event));
 
-        // An explicit end, so the client can tell "finished" from "connection dropped".
-        send(emitter, "done", Map.of());
+        SseEvents.done(emitter);
         emitter.complete();
       } catch (Exception e) {
         log.error("Error streaming agent answer for question: {}", question.getQuestion(), e);
@@ -119,22 +118,5 @@ public class ChatController {
     });
 
     return emitter;
-  }
-
-  /** Sealed event type, so the compiler checks every kind has a place on the wire. */
-  private void send(SseEmitter emitter, AgentEvent event) {
-    switch (event) {
-      case StepEvent step -> send(emitter, "step", Map.of("label", step.label()));
-      case SourceEvent source -> send(emitter, "source", source.source());
-      case SegmentEvent segment -> send(emitter, "segment", segment.segment());
-    }
-  }
-
-  private void send(SseEmitter emitter, String eventName, Object data) {
-    try {
-      emitter.send(SseEmitter.event().name(eventName).data(data));
-    } catch (IOException e) {
-      throw new RuntimeException("Error sending SSE event: " + eventName, e);
-    }
   }
 }

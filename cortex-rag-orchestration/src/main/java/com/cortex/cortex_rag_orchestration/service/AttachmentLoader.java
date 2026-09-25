@@ -60,6 +60,7 @@ class AttachmentLoader {
 
     StringBuilder text = new StringBuilder();
     List<String> notes = new ArrayList<>();
+    List<String> fileNames = new ArrayList<>();
 
     int remaining = tokenBudget;
     int loaded = 0;
@@ -93,13 +94,14 @@ class AttachmentLoader {
       text.append(sourceFormatter.formatWithIds(chunks));
 
       remaining -= cost;
+      fileNames.add(fileName);
       loaded++;
     }
 
     log.info("[agent] attachments: {} of {} loaded, ~{} tokens used", loaded, fileIds.size(),
         tokenBudget - remaining);
 
-    return new LoadedAttachments(text.toString(), notes);
+    return new LoadedAttachments(fileNames, text.toString(), notes);
   }
 
   /** Same estimate {@code SearchService} uses for its own budget, so the two agree. */
