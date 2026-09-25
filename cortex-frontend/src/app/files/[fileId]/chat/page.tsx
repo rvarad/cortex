@@ -1,12 +1,14 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useParams } from "next/navigation";
-import { ChatPanel } from "@/components/chat/chat-panel";
-
-/** Per-file chat: the same panel as the library chat, with this file attached. */
-export default function FileChatPage() {
-  const params = useParams();
-  const fileId = params.fileId as string;
-
-  return <ChatPanel fileId={fileId} />;
+/**
+ * Kept so existing links still work. Chat is one surface now: the file rides
+ * along as a query param and is pre-attached to the first question.
+ */
+export default async function FileChatPage({
+  params,
+}: {
+  params: Promise<{ fileId: string }>;
+}) {
+  const { fileId } = await params;
+  redirect(`/chat?attach=${fileId}`);
 }

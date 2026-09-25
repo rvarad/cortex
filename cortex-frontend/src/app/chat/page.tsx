@@ -1,9 +1,18 @@
 import { ChatPanel } from "@/components/chat/chat-panel";
 
 /**
- * Library-wide chat: the same panel with nothing attached. The backend already
- * treats an empty fileIds as "retrieve across everything this user owns".
+ * A fresh chat. Nothing is created until the first question is sent.
+ *
+ * `?attach={fileId}` pre-attaches a file — the entry point from a file tile.
+ * In Next 16 `searchParams` is a promise on a server page.
  */
-export default function LibraryChatPage() {
-  return <ChatPanel />;
+export default async function NewChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ attach?: string | string[] }>;
+}) {
+  const { attach } = await searchParams;
+  const fileId = Array.isArray(attach) ? attach[0] : attach;
+
+  return <ChatPanel fileId={fileId} />;
 }

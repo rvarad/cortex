@@ -1,6 +1,8 @@
 import { PIPELINE_EVENT_TYPES } from "@/lib/types";
 import type {
   AnswerSegment,
+  ConversationDetail,
+  ConversationSummary,
   FileItem,
   PipelineStreamEvent,
   PlaybackUrlResponse,
@@ -184,6 +186,34 @@ export function subscribeToPipelineEvents(
   return eventSource;
 }
 
+// ============ Conversations ============
+
+/** Creates an empty conversation. Called on first send, not on page open. */
+export async function createConversation() {
+  return request<ConversationSummary>("/conversations", { method: "POST" });
+}
+
+/** The sidebar, newest activity first (the server orders it). */
+export async function listConversations() {
+  return request<ConversationSummary[]>("/conversations");
+}
+
+/**
+ * One conversation for reload. Returns only the most recent messages — the
+ * server caps it and exposes no offset, so there is no "load earlier" yet.
+ *
+ * Throws ApiError 404 for an id that is missing or belongs to someone else;
+ * the backend deliberately does not distinguish the two.
+ */
+export async function getConversation(id: string) {
+  return request<ConversationDetail>(`/conversations/${id}`);
+}
+
+/** Hard delete; the messages cascade server-side. No undo. */
+export async function deleteConversation(id: string) {
+  return request<void>(`/conversations/${id}`, { method: "DELETE" });
+}
+
 // ============ Chat ============
 
 export interface ChatStreamHandlers {
@@ -264,12 +294,15 @@ function dispatchChatFrame(
  * is told apart from a finished one. Rejects on a non-2xx response or an
  * aborted signal.
  */
-export async function streamAgentChat(
+export async function streamConversationMessage(
+  conversationId: string,
   body: { question: string; fileIds: string[] },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal
 ): Promise<boolean> {
-  const response = await fetch(`${API_URL}/chats/agent/stream`, {
+  const response = await fetch(
+    `${API_URL}/conversations/${conversationId}/messages`,
+    {
     method: "POST",
     credentials: "include",
     headers: {

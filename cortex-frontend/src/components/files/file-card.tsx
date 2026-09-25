@@ -213,7 +213,7 @@ export function FileCard({ file, onMutate }: FileCardProps) {
             {playbackSlot}
             {isProcessed && (
               <Link
-                href={`/files/${file.fileId}/chat`}
+                href={`/chat?attach=${file.fileId}`}
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
               >
                 <MessageSquare />

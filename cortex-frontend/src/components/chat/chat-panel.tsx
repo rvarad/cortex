@@ -1,8 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ApiError, getFiles, streamAgentChat } from "@/lib/api";
-import type { AnswerSegment, FileItem, SourceRef } from "@/lib/types";
+import {
+  ApiError,
+  createConversation,
+  getConversation,
+  getFiles,
+  streamConversationMessage,
+} from "@/lib/api";
+import type {
+  AnswerSegment,
+  ConversationMessage as StoredMessage,
+  FileItem,
+  SourceRef,
+} from "@/lib/types";
+import { useConversations } from "./conversations-provider";
 import { formatDuration } from "@/lib/helpers";
 import { useMediaPlayer } from "@/components/media/media-player-provider";
 import { AttachmentPicker } from "./attachment-picker";
@@ -11,6 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
   FileAudio,
   FileVideo,
   Loader2,
@@ -35,6 +48,10 @@ interface Attachment {
 interface UserMessage {
   role: "user";
   text: string;
+  /** A stored question whose answer was never saved — the run was stopped or
+   *  crashed. Live, the stop notice is on the assistant bubble; on reload
+   *  there is no assistant row at all, so the question carries it. */
+  unanswered?: boolean;
   /** What was attached to this question. Attachments clear after each send,
    *  so the history has to carry them or the provenance below means nothing. */
   attachments: Attachment[];
@@ -90,12 +107,57 @@ interface ChatPanelProps {
   /** Pre-attaches this file to the first question. It's an ordinary chip from
    *  there — removable, and cleared on send like any other. */
   fileId?: string;
+  /** Loads and continues a stored conversation. Absent on a fresh chat, where
+   *  one is created on the first send. */
+  conversationId?: string;
 }
 
-export function ChatPanel({ fileId }: ChatPanelProps) {
+/** Stored rows → the shape the bubbles already render. */
+function toMessages(stored: StoredMessage[]): Message[] {
+  return stored.map((row, index) => {
+    if (row.role === "ASSISTANT") {
+      return {
+        role: "assistant",
+        steps: [],
+        segments: row.segments ?? [],
+        sources: row.sources ?? [],
+        // Provenance is a fact about each source; the answer no longer needs
+        // to know which ids were attached to reproduce the marking.
+        attachedFileIds: (row.sources ?? [])
+          .filter((source) => source.attached)
+          .map((source) => source.fileId),
+        status: "done",
+      };
+    }
+
+    // §5.5: a half answer is never saved, so a question with nothing after it
+    // is one that was stopped or died mid-run.
+    const next = stored[index + 1];
+
+    return {
+      role: "user",
+      text: row.text ?? "",
+      unanswered: !next || next.role !== "ASSISTANT",
+      attachments: (row.attachments ?? []).map((file) => ({
+        fileId: file.fileId,
+        fileDisplayName: file.fileDisplayName ?? "Deleted file",
+      })),
+    };
+  });
+}
+
+export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
   const { open } = useMediaPlayer();
+  const conversations = useConversations();
 
   const [files, setFiles] = useState<FileItem[]>([]);
+  // Only a fresh chat needs state: it acquires an id on the first send. For a
+  // stored chat the prop is the id, so navigating between two conversations
+  // can never leave a stale one behind.
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const chatId = conversationId ?? createdId;
+  const [isLoading, setIsLoading] = useState(Boolean(conversationId));
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -143,10 +205,51 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
     };
   }, [fileId, open]);
 
-  // Abandon an in-flight answer if the user navigates away.
+  // Tell the sidebar which row to highlight; clear it on a fresh chat.
+  // setActiveId comes from useState, so it is stable — depending on the whole
+  // context value would re-run this on every list refresh.
+  const setActiveId = conversations?.setActiveId;
+  useEffect(() => {
+    setActiveId?.(chatId);
+  }, [chatId, setActiveId]);
+
+  // Load a stored conversation. A reloaded answer must render exactly like a
+  // live one, citations included — that is the whole point of storing segments
+  // and sources as JSON rather than prose.
+  useEffect(() => {
+    if (!conversationId) return;
+
+    let cancelled = false;
+    setIsLoading(true);
+    setLoadError(null);
+
+    void (async () => {
+      try {
+        const conversation = await getConversation(conversationId);
+        if (cancelled) return;
+        setMessages(toMessages(conversation.messages));
+      } catch (error) {
+        if (cancelled) return;
+        setMessages([]);
+        setLoadError(
+          error instanceof ApiError && error.status === 404
+            ? "This chat no longer exists."
+            : "Couldn't load this chat."
+        );
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  // Abandon an in-flight answer if the user navigates away or switches chats.
   useEffect(() => {
     return () => abortRef.current?.abort();
-  }, []);
+  }, [conversationId]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -209,7 +312,21 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
     setIsStreaming(true);
 
     try {
-      const completed = await streamAgentChat(
+      // A conversation is created on the first send, never on page open.
+      let id = chatId;
+      if (!id) {
+        id = (await createConversation()).id;
+        setCreatedId(id);
+
+        // replaceState, not router.replace: /chat and /chat/[id] are different
+        // route segments, so a navigation would remount this component and
+        // drop the answer now streaming in. The URL is all that needs to move;
+        // a later hard reload lands on the real route.
+        window.history.replaceState(null, "", `/chat/${id}`);
+      }
+
+      const completed = await streamConversationMessage(
+        id,
         { question, fileIds },
         {
           onStep: (label) =>
@@ -265,6 +382,8 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
       );
     } finally {
       setIsStreaming(false);
+      // The title lands on the first message and updatedAt reorders the list.
+      conversations?.refresh();
     }
   }
 
@@ -288,7 +407,27 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-6 overflow-y-auto pb-4">
-        {messages.length === 0 && (
+        {isLoading && (
+          <div className="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading chat…
+          </div>
+        )}
+
+        {loadError && (
+          <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+            <TriangleAlert className="h-6 w-6 text-amber-500" />
+            <p className="text-sm text-muted-foreground">{loadError}</p>
+            <Link
+              href="/chat"
+              className="text-sm text-primary underline-offset-4 hover:underline"
+            >
+              Start a new chat
+            </Link>
+          </div>
+        )}
+
+        {!isLoading && !loadError && messages.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <div className="mb-4 rounded-xl bg-primary/10 p-4">
               <MessageSquare className="h-8 w-8 text-primary" />
@@ -418,6 +557,86 @@ function UserBubble({ message }: { message: UserMessage }) {
       <p className="max-w-[85%] rounded-2xl bg-muted px-4 py-2 text-sm whitespace-pre-wrap">
         {message.text}
       </p>
+      {message.unanswered && (
+        <p className="text-xs text-muted-foreground">No answer was saved</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the agent did before it started writing, as one row rather than a stack.
+ *
+ * Only the step in progress is shown; the earlier ones sit behind a disclosure.
+ * The steps matter — they are what makes a multi-second wait legible, and they
+ * are the visible proof that broadening to the library was a deliberate second
+ * tool call rather than a silent one — but they should not outweigh the answer
+ * they sit above.
+ */
+function StepTimeline({
+  steps,
+  isThinking,
+}: {
+  steps: AgentStep[];
+  isThinking: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (steps.length === 0) return null;
+
+  const current = steps[steps.length - 1];
+  const previous = steps.slice(0, -1);
+  const canExpand = previous.length > 0;
+
+  const summary = isThinking
+    ? current.label
+    : `Worked for ${steps.length} step${steps.length === 1 ? "" : "s"}`;
+
+  const row = (
+    <>
+      {isThinking ? (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      ) : (
+        <Check className="h-3 w-3 shrink-0" />
+      )}
+      <span className="truncate">{summary}</span>
+      {canExpand && (
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 transition-transform",
+            expanded && "rotate-180"
+          )}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      {/* Nothing to reveal on a single-step run, so nothing to click either. */}
+      {canExpand ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-expanded={expanded}
+          className="flex max-w-full items-center gap-2 rounded transition-colors hover:text-foreground"
+        >
+          {row}
+        </button>
+      ) : (
+        <div className="flex max-w-full items-center gap-2">{row}</div>
+      )}
+
+      {expanded && (
+        <ol className="space-y-1 border-l border-border/60 pl-3 text-muted-foreground/70">
+          {previous.map((step, index) => (
+            <li key={index} className="flex items-center gap-2">
+              <Check className="h-3 w-3 shrink-0" />
+              <span>{step.label}</span>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }
@@ -464,32 +683,7 @@ function AssistantBubble({
 
   return (
     <div className="space-y-3">
-      {/* What the agent did before it started writing. The last step spins
-          until the first segment lands. */}
-      {timeline.length > 0 && (
-        <ol
-          className={cn(
-            "space-y-1 text-xs",
-            message.status === "streaming"
-              ? "text-muted-foreground"
-              : "text-muted-foreground/60"
-          )}
-        >
-          {timeline.map((step, index) => {
-            const isCurrent = isThinking && index === timeline.length - 1;
-            return (
-              <li key={index} className="flex items-center gap-2">
-                {isCurrent ? (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                ) : (
-                  <Check className="h-3 w-3 shrink-0" />
-                )}
-                <span>{step.label}</span>
-              </li>
-            );
-          })}
-        </ol>
-      )}
+      <StepTimeline steps={timeline} isThinking={isThinking} />
 
       <div className="text-sm leading-relaxed">
         {isBlank ? (
