@@ -1,0 +1,32 @@
+{
+	"permissions": {
+		"allow": [
+			"Bash(mvn *)",
+			"Bash(npm run lint *)",
+			"Bash(npm run build *)",
+			"Bash(docker compose up -d *)",
+			"Bash(docker compose ps *)",
+			"Bash(docker compose logs *)",
+			"Bash(docker compose down *)"
+		],
+		"ask": [
+			"Bash(git commit *)",
+			"Bash(git push *)",
+			"Edit(/cortex-ingestion/src/main/resources/db/migration/**)"
+		],
+		"deny": [
+			"Read(**/.env*)",
+			"Read(**/credentials.json)",
+			"Read(**/*.jks)",
+			"Read(**/*.p12)",
+			"Read(**/*.pem)",
+			"Read(**/*.key)",
+			"Read(certs/**)",
+			"Read(swag_config/**)",
+			"Read(swag_data/**)",
+			"Bash(./deploy.sh *)",
+			"Bash(bash deploy.sh *)",
+			"Bash(docker compose -f docker-compose.prod.yaml *)"
+		]
+	}
+}
