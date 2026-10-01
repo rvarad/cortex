@@ -1,6 +1,6 @@
 # Cortex
 
-Java 21 / Spring Boot 3.5.11 / Spring AI 1.1.2. Five Maven modules plus a Next.js
+Java 21 / Spring Boot 3.5.x (differs per module; check its `pom.xml`) / Spring AI 1.1.2. Five Maven modules plus a Next.js
 frontend. `README.md` says what it does.
 
 ## Commands
@@ -18,7 +18,8 @@ cd cortex-frontend && npm run dev | build | lint
 ## Things that will surprise you
 
 - **`cortex-ingestion` owns the schema.** Every Flyway migration lives there, for
-  every table, including ones only rag-orchestration reads. All three JPA services
+  every table and column, including ones only rag-orchestration queries (e.g.
+  `media_chunk.search_vector`). All three JPA services
   run `ddl-auto=validate`, so a missing migration breaks services you didn't touch.
   See `.claude/rules/db-schema.md`.
 - **The root `pom.xml` aggregates but does not parent.** Each module parents to
@@ -26,7 +27,8 @@ cd cortex-frontend && npm run dev | build | lint
   inherited from the root.
 - **CI runs on `master` and `production-hardening` and PRs to `master` only.** Pushes to a feature branch run
   nothing. Run `mvn -B verify` locally or open the PR.
-- **ripgrep respects `.gitignore`, which excludes every `application-dev.properties`.**
+- **ripgrep respects `.gitignore`, which excludes every `application-dev.properties`
+  and `application-dev.yaml`.**
   A search that finds no occurrence of a config key proves nothing. Open the file.
 
 ## How work happens here
