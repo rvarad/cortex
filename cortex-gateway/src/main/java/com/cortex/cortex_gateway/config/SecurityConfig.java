@@ -41,6 +41,7 @@ public class SecurityConfig {
     return httpSecurity
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/api/v1/webhook/**").permitAll()
+            // External uptime check (UptimeRobot) polls /actuator/health through the gateway.
             .requestMatchers("/actuator/**").permitAll()
             .requestMatchers("/auth/**").permitAll()
             .anyRequest().authenticated())
