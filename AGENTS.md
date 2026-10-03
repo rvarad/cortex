@@ -25,7 +25,7 @@ cd cortex-frontend && npm run dev | build | lint
 - **The root `pom.xml` aggregates but does not parent.** Each module parents to
   `spring-boot-starter-parent` directly, so versions are set per module, not
   inherited from the root.
-- **CI runs on `master` and `production-hardening` and PRs to `master` only.** Pushes to a feature branch run
+- **CI runs on `master`, `production-hardening` and `development` and PRs to `master` only.** Pushes to a feature branch run
   nothing. Run `mvn -B verify` locally or open the PR.
 - **ripgrep respects `.gitignore`, which excludes every `application-dev.properties`
   and `application-dev.yaml`.**

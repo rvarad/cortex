@@ -44,7 +44,7 @@ place as of 2026-09-30 — `MediaProcessingService.startFFmpegChunkingProcess` i
 given the original's signed URL. If vision on an HEVC file ever returns an empty or
 incoherent summary, re-test this first.
 
-## 2026-04-24 — A dispatcher thread that stops on a shared flag gets revived by the next job
+## 2026-04-24 — A dispatcher thread that stops on a shared flag gets revived by the next job (concurrency bug)
 
 **Area:** spring
 **Cost:** Corrupt data. One file's chunks were uploaded into another file's GCS
@@ -88,3 +88,45 @@ the same time, which makes the per-job state load-bearing. One piece was not mov
 **The general lesson.** A stop flag has to belong to the thing it stops. If a
 thread's exit condition reads state the next job also writes, the next job can
 cancel the stop.
+
+## 2026-09-09 — Spring AI's google-genai chat starter builds our Vertex `Client` before `@Value` placeholders are resolved
+
+**Area:** spring
+**Cost:** Every Vertex call in rag-orchestration failed: the new agent and the
+existing chat path alike. Found during the Spring AI migration (Brick 1.5).
+
+**What was seen.** After adding `spring-ai-starter-model-google-genai`, every Vertex
+call failed with `UnknownHostException: ${spring.cloud.gcp.location}-aiplatform.googleapis.com`.
+The `@Value` placeholders in `GeminiConfig` had been injected as literal text.
+
+**What was actually happening.** Spring AI 1.1.2 guards its cached-content bean with
+`CachedContentServiceCondition`, which calls `getBean()` while the condition is being
+evaluated. That evaluation runs inside `ConfigurationClassPostProcessor`, a
+`BeanFactoryPostProcessor`. Resolving it builds `GoogleGenAiChatModel`, which needs
+the `Client`, which builds `GeminiConfig.genAiClient` — all before
+`PropertySourcesPlaceholderConfigurer` (also a BFPP) has run, so no `${...}` can be
+resolved. Spring says so a line later: "Cannot enhance @Configuration bean
+definition 'geminiConfig' since its singleton instance has been created too early."
+A `Condition` calling `getBean()` is an upstream anti-pattern. Nothing in our code was
+wrong: `GeminiConfig` was byte-identical to the version that worked on 2026-09-07.
+
+**How it was found.** A stack trace taken inside the bean method, which showed
+`CachedContentServiceCondition.getMatchOutcome` → `ConditionEvaluator.shouldSkip` →
+`ConfigurationClassPostProcessor.postProcessBeanDefinitionRegistry` →
+`PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors`. The old chat
+path breaking the same way proved it predated the agent work.
+
+**What changed.** `GeminiConfig.genAiClient` reads its config from `Environment`
+instead of `@Value`, with a null check that names the missing properties.
+`Environment` is populated before any bean exists, so bean ordering can't catch it
+out. Still in place as of 2026-10-01, with a comment on the line saying why. Don't
+generalise it: `@Value` stays the default everywhere else, and only a bean known to be
+dragged into the post-processor phase needs `Environment`. Don't revert it when
+upstream fixes the condition either: the `@Value` version "worked by luck of
+classpath ordering, not by design."
+
+**The general lesson.** An unchecked bad value travels. The literal `${...}` went
+through the region, into a URL, into DNS — four layers — before anything complained,
+and the error looked like a networking problem. A required value that is absent must
+stop things immediately. And a shared bean fails widely: "Does the old path break the
+same way?" is the cheapest possible bisect.
