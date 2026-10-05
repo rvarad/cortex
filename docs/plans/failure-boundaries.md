@@ -1,7 +1,8 @@
 # Failure boundaries
 
-**Status:** Not started. Plan written 2026-10-05 from ADR-0014. Slices 1 and 2 are
-broken into bricks; Slice 3 gets its own planning pass once they land.
+**Status:** Slice 1 in progress: brick 1 (`BackgroundTask`) done, nothing calls it
+yet; brick 2 swaps it in for `withMDC` in media. Slice 3 gets its own planning pass
+once Slices 1 and 2 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -43,9 +44,12 @@ throw.
 - **How failures are triggered** — Mockito fakes that throw, in tests. No
   fault-injection hooks in `src/main`. Real failures are what we watch for after
   merge, not something we trigger.
-- **How "logged once" is checked** — Spring Boot's `OutputCaptureExtension`: count the
-  ERROR lines the test produced. Already on the classpath via
-  `spring-boot-starter-test`.
+- **How "logged once" is checked** — capture the logback events themselves with a
+  `ListAppender` on the handler's logger, and assert on their level, exception and MDC.
+  Not printed output: a plain unit test's console pattern doesn't print MDC, so a check
+  on the text can't see the `fileId`. The appender calls
+  `prepareForDeferredProcessing()` on each event as it arrives, because logback reads
+  an event's MDC lazily, from whichever thread asks first.
 - **Kafka tests use `@EmbeddedKafka` with a small context**: the Kafka
   auto-configuration, our error handler, the listener under test, and fakes for its
   collaborators. Not a full app context, which needs GCS and Gemini. `spring-kafka-test`
@@ -77,7 +81,7 @@ None blocking Slices 1 and 2.
 a Kafka send produces one ERROR line with a stack trace and the `fileId`. Nothing
 vanishes into a pool thread, and no failed chunk is retried nine times.
 
-#### 1. Fire-and-forget wrapper in `cortex-common` — ⬜
+#### 1. Fire-and-forget wrapper in `cortex-common` — ✅ DONE 2026-10-05
 
 The wrapper that replaces `withMDC`: copies MDC into the task, catches anything the
 task throws, logs it once at ERROR with the stack trace, clears MDC. Unit tests only;
