@@ -1,8 +1,8 @@
 # Failure boundaries
 
-**Status:** Slice 1 in progress: bricks 1–2 done. Every media thread, and the media
-job itself, runs inside `BackgroundTask`; `withMDC` is gone. Next is brick 3, the
-agent threads in rag. Slice 3 gets its own planning pass once Slices 1 and 2 land.
+**Status:** Slice 1 in progress: bricks 1–3 done. Every media thread, the media job,
+and each conversation answer run inside `BackgroundTask`. Next is brick 4, the Kafka
+error handler in rag. Slice 3 gets its own planning pass once Slices 1 and 2 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -33,6 +33,9 @@ throw.
   disabled; they need GCS and AI credentials.
 - **The gateway** beyond the login handler. It proxies; downstream statuses pass
   through.
+- **`ChatController` and the old chat path behind it** (`ChatService`,
+  `VertexAnswerGenerator`). Marked `@Deprecated`; nothing in the frontend calls them,
+  and they will be deleted rather than fixed.
 
 ## Decisions
 
@@ -115,17 +118,25 @@ cause dropped, escapes onto the pool thread. After it: one ERROR line, from
 `BackgroundTaskTest` covers a checked exception and the interrupt flag. Both modules'
 tests green, with `cortex-common` re-installed first.
 
-#### 3. Rag: the agent threads run inside the wrapper — ⬜
+#### 3. Rag: the agent threads run inside the wrapper — ✅ DONE 2026-10-08
 
-The three `Thread.startVirtualThread` sites in `ChatController` and
-`ConversationController`. A send failing because the client left is logged at INFO
-(it stops the agent, as designed); anything else is completed on the emitter and
-reaches the wrapper. The `SearchService` and `OrchestrationService` futures are *not*
-wrapped: something waits on each (ADR-0014 amendment).
+The `Thread.startVirtualThread` site in `ConversationController` goes through a
+helper, `SseEvents.answering`, which runs the answer inside `BackgroundTask`. The two
+in `ChatController` stay as they are: that class is deprecated (see Not doing). A send failing because the client left now throws
+`ClientDisconnectedException` (it was a bare `RuntimeException`) and is logged at INFO
+(it stops the agent, as designed); anything else closes the emitter with the error and
+reaches the wrapper. `ConversationController` puts `conversationId` in MDC before
+starting the thread, and rag's log pattern prints it. The controllers' own log lines,
+which carried the user's question text, are gone. The `SearchService` and
+`OrchestrationService` futures are *not* wrapped: something waits on each (ADR-0014
+amendment).
 
-**DoD:** Test with `ConversationService` faked to throw: one ERROR line with the
-`conversationId`, and the emitter completes with an error. Test with a fake emitter
-whose `send` throws `IOException`: an INFO line, no ERROR.
+**DoD:** `ConversationAnswerBoundaryTest` drives the real controller with
+`ConversationService` faked to throw. Before: the ERROR line comes from
+`ConversationController`, with the question text and no `conversationId` in MDC. After:
+one ERROR line from `BackgroundTask` with the `conversationId`. `SseEventsTest`:
+finished → stream completed, no ERROR; failed → stream closed with the error, one
+ERROR at the boundary; client gone → one INFO line, no ERROR.
 
 #### 4. Kafka error handler in rag, proven with embedded Kafka — ⬜
 
@@ -237,6 +248,24 @@ media (`MediaProcessingService` 18, `GcsStorageService` 3), where the upload-wor
 catch changes behaviour and gets a brick to itself; rag (27 across 15 files); ingestion
 (12). Also: `"..." + e` messages, and `catch (InterruptedException e)` that doesn't
 restore the interrupt flag.
+
+**The upload dispatcher can hang a job forever.** Its catch in
+`startUploadDispatcher` logs nothing: it sets the interrupt flag and `break`s, so the
+dispatcher stops. Nothing drains the upload queue after that, and step 2 of
+`cleanUpWorkingDir` (`while` the queue isn't empty, sleep one second) waits forever,
+logging "Waiting for N remaining uploads…" each second. The job never finishes and
+keeps one of the two job threads. Rare today (it needs an interrupt, and nothing
+sends one), but a hang, not a failure, so no boundary ever sees it. Fix it with this
+slice's media bricks, and give the drain loop a deadline when the timeouts work
+lands.
+
+**A client leaving mid-answer is mistaken for bad JSON.** In `AgentService.streamRound`,
+the `catch (Exception e)` around `parser.feed(piece)` also catches the
+`ClientDisconnectedException` thrown when a segment's send fails, because segments are
+sent from inside the parser's callback. It logs "streamed answer was not the expected
+JSON" at WARN, keeps reading the model's stream to the end of the round (tokens paid
+for, nobody listening), and only stops when the final uncited segment's send fails.
+That catch must let the disconnect through.
 
 **Cleanup goes in `finally`, not `catch`.** Letting a failure propagate must not skip
 cleanup. Today `processMedia` deletes its work directory only on the success path,
