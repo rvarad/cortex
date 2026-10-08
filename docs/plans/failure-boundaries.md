@@ -1,8 +1,8 @@
 # Failure boundaries
 
-**Status:** Slice 1 in progress: brick 1 (`BackgroundTask`) done, nothing calls it
-yet; brick 2 swaps it in for `withMDC` in media. Slice 3 gets its own planning pass
-once Slices 1 and 2 land.
+**Status:** Slice 1 in progress: bricks 1–2 done. Every media thread, and the media
+job itself, runs inside `BackgroundTask`; `withMDC` is gone. Next is brick 3, the
+agent threads in rag. Slice 3 gets its own planning pass once Slices 1 and 2 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -92,17 +92,28 @@ line, containing the exception's stack trace and the MDC `fileId` set by the cal
 A task that succeeds logs nothing. MDC is empty on the thread afterwards in both
 cases. `mvn -pl cortex-common test` green.
 
-#### 2. Media: the job and its threads run inside the wrapper — ⬜
+#### 2. Media: the job and its threads run inside the wrapper — ✅ DONE 2026-10-08
 
-The executor's task decorator in `MediaProcessingCofig` and the five
-`Thread.startVirtualThread(withMDC(...))` sites in `MediaProcessingService` switch to
-the wrapper. `withMDC` is deleted. The catch-and-rethrow at the bottom of
-`processMedia` goes; the boundary does the logging now.
+`MediaEventConsumer` wraps the job in `BackgroundTask` where it hands it to the
+executor, and the six `Thread.startVirtualThread(withMDC(...))` sites in
+`MediaProcessingService` switch to it. The executor's MDC-copying task decorator in
+`MediaProcessingConfig` goes (BackgroundTask carries MDC), and `withMDC` is deleted.
+The catch-and-rethrow at the bottom of `processMedia` goes; the boundary does the
+logging now.
 
-**DoD:** A test hands a media job to the real executor with `GcsStorageService`
-faked to throw on its first call. Before the change, the log has no ERROR line from
-our code (the failure goes to stderr). After it: one ERROR line with the `fileId`
-and the fake's exception. `mvn -pl cortex-media-processing-service -am test` green.
+Wrapped at the call site, not in the task decorator: `processMedia` throws checked
+exceptions (`IOException`, `InterruptedException`), which a `Runnable` can't. So
+`BackgroundTask.of` now takes a `Work` that may throw them, and restores the
+interrupt flag when the failure is an `InterruptedException`.
+
+**DoD:** `MediaJobBoundaryTest` hands a job to the real executor through the real
+consumer, with `GcsStorageService` faked to throw on its first call. Before the
+change: the one ERROR line comes from `MediaProcessingService` ("FFmpeg execution
+failed", though ffmpeg never ran), and a `RuntimeException` rebuilt from a string,
+cause dropped, escapes onto the pool thread. After it: one ERROR line, from
+`BackgroundTask`, with the `fileId` and the original exception, and nothing escapes.
+`BackgroundTaskTest` covers a checked exception and the interrupt flag. Both modules'
+tests green, with `cortex-common` re-installed first.
 
 #### 3. Rag: the agent threads run inside the wrapper — ⬜
 

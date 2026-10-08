@@ -40,13 +40,12 @@ import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
+import com.cortex.cortex_common.utils.BackgroundTask;
 import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
 import com.cortex.cortex_media_processing_service.service.processing.MediaProcessingContext;
 import com.cortex.cortex_media_processing_service.service.processing.UploadStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
-import static com.cortex.cortex_common.utils.MdcUtils.withMDC;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,7 +93,11 @@ public class MediaProcessingService {
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
   private final Semaphore normalisationSlots = new Semaphore(MAX_CONCURRENT_NORMALISATIONS);
 
-  public void processMedia(String objectName, UUID fileId, String userId) {
+  /**
+   * Runs one media job. Throws whatever goes wrong: the caller wraps this in BackgroundTask, the
+   * job's boundary, which is the one place its failures are reported (ADR-0014).
+   */
+  public void processMedia(String objectName, UUID fileId, String userId) throws Exception {
     log.info("Beginning chunking for file: {}", objectName);
 
     MediaProcessingContext ctx = null;
@@ -181,7 +184,7 @@ public class MediaProcessingService {
       if (plan.equals(NormalisationEnum.PASSTHROUGH)) {
         fileMetadataRepository.updatePlaybackReady(fileId, objectName);
       } else {
-        normalisationThread = Thread.startVirtualThread(withMDC(() -> {
+        normalisationThread = Thread.startVirtualThread(BackgroundTask.of("normalisation", () -> {
           try {
             normalisationSlots.acquire();
 
@@ -225,8 +228,8 @@ public class MediaProcessingService {
         }));
       }
 
-      Thread.startVirtualThread(withMDC(() -> startDirectoryWatcher(processContext)));
-      Thread.startVirtualThread(withMDC(() -> startUploadDispatcher(processContext)));
+      Thread.startVirtualThread(BackgroundTask.of("directory watcher", () -> startDirectoryWatcher(processContext)));
+      Thread.startVirtualThread(BackgroundTask.of("upload dispatcher", () -> startUploadDispatcher(processContext)));
 
       processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
@@ -239,7 +242,7 @@ public class MediaProcessingService {
       Process ffmpegProcess = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
 
-      Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(ffmpegProcess)));
+      Thread.startVirtualThread(BackgroundTask.of("ffmpeg output reader", () -> monitorFFmpegOutput(ffmpegProcess)));
 
       waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS());
 
@@ -283,11 +286,6 @@ public class MediaProcessingService {
 
       log.info("Media processing completed and cleaned up.");
 
-    } catch (Exception e) {
-      log.error("FFmpeg execution failed", e);
-      // processContext.getIsRunning().set(false); // Ensure we signal shutdown even
-      // on error
-      throw new RuntimeException("Failed to process media file: " + objectName + " exception: " + e);
     } finally {
       if (ctx != null) {
         ctx.getIsRunning().set(false);
@@ -564,7 +562,7 @@ public class MediaProcessingService {
     processBuilder.redirectErrorStream(true);
     Process process = processBuilder.start();
 
-    Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(process)));
+    Thread.startVirtualThread(BackgroundTask.of("normalisation output reader", () -> monitorFFmpegOutput(process)));
 
     boolean finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
     if (!finished) {
@@ -703,7 +701,7 @@ public class MediaProcessingService {
 
         log.info("Uploading chunk: {}", chunkPath.getFileName());
 
-        Thread.startVirtualThread(withMDC(() -> {
+        Thread.startVirtualThread(BackgroundTask.of("upload worker", () -> {
           processContext.getChunkUploadStatusMap().put(chunkPath.toString(),
               com.cortex.cortex_media_processing_service.service.processing.UploadStatus.IN_PROGRESS);
           uploadWorker(processContext, chunkPath);

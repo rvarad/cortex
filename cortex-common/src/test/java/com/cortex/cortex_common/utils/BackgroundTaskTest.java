@@ -3,6 +3,7 @@ package com.cortex.cortex_common.utils;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -66,7 +67,8 @@ class BackgroundTaskTest {
     });
     MDC.clear(); // the caller moves on; the task must still carry the id it was given
 
-    // Anything that escapes the task lands here. Today, with withMDC, the exception would.
+    // Anything that escapes the task lands here. Before BackgroundTask, with MdcUtils.withMDC,
+    // the exception did.
     AtomicReference<Throwable> escaped = new AtomicReference<>();
 
     // ---- Act: run it the way production does, on a thread nobody waits on for a result ----
@@ -154,6 +156,40 @@ class BackgroundTaskTest {
     List<ILoggingEvent> errors = errorEvents();
     assertThat(errors).hasSize(1);
     assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", "file-123");
+  }
+
+  @Test
+  void checkedException_isLoggedOnce_likeAnyOther() {
+    // Code below the boundary lets IOException and friends propagate instead of wrapping them.
+    // They must arrive here and be reported the same way.
+    Runnable wrapped = BackgroundTask.of("upload worker", () -> {
+      throw new IOException("connection reset");
+    });
+
+    wrapped.run();
+
+    List<ILoggingEvent> errors = errorEvents();
+    assertThat(errors).hasSize(1);
+    assertThat(errors.get(0).getThrowableProxy().getClassName()).isEqualTo(IOException.class.getName());
+  }
+
+  @Test
+  void interruptedTask_isLogged_andTheInterruptFlagIsPutBack() throws InterruptedException {
+    // Catching InterruptedException clears the thread's interrupt flag. The boundary puts it back,
+    // so whatever runs next on the thread can still see it was asked to stop.
+    AtomicReference<Boolean> flagAfterwards = new AtomicReference<>();
+    Runnable wrapped = BackgroundTask.of("normalisation", () -> {
+      throw new InterruptedException("shutting down");
+    });
+
+    Thread thread = Thread.ofPlatform().start(() -> {
+      wrapped.run();
+      flagAfterwards.set(Thread.currentThread().isInterrupted());
+    });
+    thread.join();
+
+    assertThat(errorEvents()).hasSize(1);
+    assertThat(flagAfterwards.get()).isTrue();
   }
 
   private List<ILoggingEvent> errorEvents() {

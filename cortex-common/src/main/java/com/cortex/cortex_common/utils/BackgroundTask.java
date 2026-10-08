@@ -23,11 +23,21 @@ public final class BackgroundTask {
   }
 
   /**
+   * The work a background task does. Unlike {@link Runnable}, it may throw checked exceptions: this
+   * is the boundary, the one place they are meant to end up, so code below it can let an
+   * {@code IOException} or {@code InterruptedException} propagate instead of wrapping it.
+   */
+  @FunctionalInterface
+  public interface Work {
+    void run() throws Exception;
+  }
+
+  /**
    * @param name what the task is, for the log line — "media job", "upload worker". MDC says which
    *     file; this says which of that file's threads failed.
    * @param task the work. Anything it throws is logged here and goes no further.
    */
-  public static Runnable of(String name, Runnable task) {
+  public static Runnable of(String name, Work task) {
     // Captured now, on the caller's thread: by the time the task runs, the caller's MDC may
     // have moved on.
     Map<String, String> callerContext = MDC.getCopyOfContextMap();
@@ -39,6 +49,11 @@ public final class BackgroundTask {
       try {
         task.run();
       } catch (Exception e) {
+        if (e instanceof InterruptedException) {
+          // Put the flag back before anything else, so whatever runs next on this thread can
+          // still see that it was asked to stop.
+          Thread.currentThread().interrupt();
+        }
         log.error("[{}] failed", name, e);
       } catch (Error e) {
         // Logged for the ids, then rethrown. An Error (out of memory, stack overflow) means the
