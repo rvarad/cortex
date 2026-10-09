@@ -1,8 +1,10 @@
 # Failure boundaries
 
-**Status:** Slice 1 in progress: bricks 1–3 done. Every media thread, the media job,
-and each conversation answer run inside `BackgroundTask`. Next is brick 4, the Kafka
-error handler in rag. Slice 3 gets its own planning pass once Slices 1 and 2 land.
+**Status:** Slice 1 in progress: bricks 1–4 done. Every media thread, the media job,
+and each conversation answer run inside `BackgroundTask`; rag's Kafka listener reports
+a failed or unreadable record once and moves on. Next is brick 5, the same Kafka
+handler in ingestion and media. Slice 3 gets its own planning pass once Slices 1 and 2
+land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -138,16 +140,23 @@ one ERROR line from `BackgroundTask` with the `conversationId`. `SseEventsTest`:
 finished → stream completed, no ERROR; failed → stream closed with the error, one
 ERROR at the boundary; client gone → one INFO line, no ERROR.
 
-#### 4. Kafka error handler in rag, proven with embedded Kafka — ⬜
+#### 4. Kafka error handler in rag, proven with embedded Kafka — ✅ DONE 2026-10-09
 
 The heavy one: first `@EmbeddedKafka` test in the repo. Error handler bean with zero
 retries; `ErrorHandlingDeserializer` in front of the JSON deserializer.
 
-**DoD:** With `VisionService` faked to throw, a `media-chunk-uploaded` record
-produces one ERROR line and `VisionService` is called **once**. Before the change,
-the same test shows ten calls. A second record sent after the failing one is
-consumed. A record that isn't valid JSON produces one ERROR line and the record
-after it is consumed.
+**DoD:** `MediaChunkListenerBoundaryTest`. With `VisionService` faked to throw, a
+`media-chunk-uploaded` record produces one ERROR line with its `fileId` and
+`VisionService` is called **once**; a second record sent after it is consumed. A
+record that isn't valid JSON produces one ERROR line and the record after it is
+consumed.
+
+Before the change, confirmed by running it: Gemini was called ten times, and Spring's
+ERROR line carried no `fileId`. The non-JSON record was worse: it fails inside
+`poll()`, the default handler can't skip it, and the consumer retried it in a tight
+loop forever (dozens of identical errors per millisecond), never reaching the next
+record. In production that happens to a test message sent from Redpanda Console, or
+to any record left in the topic after its DTO class is renamed or moved.
 
 #### 5. Kafka error handler in ingestion and media — ⬜
 
