@@ -1,6 +1,6 @@
 # 0014. Exceptions propagate to a named boundary, and only the boundary handles them
 
-**Status:** Amended 2026-10-05 (accepted 2026-10-05)
+**Status:** Amended 2026-10-12 (accepted 2026-10-05)
 **Verified by:** Read of every `src/main` file on `reliability-hardening`, 2026-10-04.
 Counted 63 `catch` blocks, 37 `new RuntimeException(...)` wraps, and 20
 `kafkaTemplate.send(...)` calls, none of whose results is looked at. Nothing has been
@@ -204,3 +204,38 @@ it is a boundary.
 The invariant "Every task handed to a thread starts inside the background-task
 handler" now reads: every **fire-and-forget** task does. A task whose result is
 waited for must not be wrapped.
+
+### 2026-10-12 — The Kafka report step is shared; the policy stays in each service
+
+The Decision gives each service one Kafka error handler. That still holds: each service
+declares its own `CommonErrorHandler` bean. What changed is where the report step comes
+from.
+
+A Kafka error handler has three parts: how a failed record is reported, what is retried
+and how often, and what happens after the last attempt (skip now, a dead-letter topic
+later). Only the first is the same in every service. It moves to `cortex-common` as one
+stateless function, `KafkaFailures.reportAndSkip(fileIdOf)`. Each service builds its
+handler from that function and Spring Kafka's own parts, and passes only how to find
+the `fileId` in its own DTO.
+
+Why shared: the report step holds two traps, and three copies would each have to get
+both right. It must restore the listener thread's MDC, or the next record's log lines
+carry the wrong `fileId`. And it must never throw, because a recoverer that throws
+makes Spring Kafka deliver the record again, forever — the same endless loop an
+unreadable record caused before `ErrorHandlingDeserializer` was added.
+`KafkaFailuresTest` covers both once.
+
+Why the rest stays in each service: the right retry policy depends on the failure, and
+only the service knows its failures (Gemini rate limits in rag, a database outage in
+ingestion). One central handler would need a branch per service and would grow with
+every failure case. Composition, not a base class: a service reads its whole policy in
+its own config.
+
+`spring-kafka` is an `optional` dependency of `cortex-common`, so it does not reach the
+gateway, which has no Kafka.
+
+New invariants:
+- `cortex-common` holds no Kafka beans, no `@Configuration`, and no policy: no
+  backoff, no retry rules, no dead-letter topics. Only how a failed record is
+  reported.
+- Every service's Kafka error handler reports through `KafkaFailures`.

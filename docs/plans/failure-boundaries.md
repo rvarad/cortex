@@ -2,8 +2,9 @@
 
 **Status:** Slice 1 in progress: bricks 1–4 done. Every media thread, the media job,
 and each conversation answer run inside `BackgroundTask`; rag's Kafka listener reports
-a failed or unreadable record once and moves on. Next is brick 5, the same Kafka
-handler in ingestion and media. Slice 3 gets its own planning pass once Slices 1 and 2
+a failed or unreadable record once and moves on, and so do ingestion's and media's,
+through the shared `KafkaFailures` report. Next is brick 6, Kafka sends that wait for
+the broker. Slice 3 gets its own planning pass once Slices 1 and 2
 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
@@ -68,6 +69,12 @@ throw.
 - **Kafka error handler:** Spring Kafka's `DefaultErrorHandler` with zero retries,
   wired as each service's `CommonErrorHandler` bean, and `ErrorHandlingDeserializer`
   in front of the JSON deserializer.
+- **Report shared, policy per service.** `cortex-common` holds one stateless function,
+  `KafkaFailures.reportAndSkip(fileIdOf)`: how a failed record is logged. Each service
+  builds its own handler bean from it and Spring Kafka's parts, and keeps its policy
+  there: retries, backoff, and later the dead-letter topic. Composition, not a base
+  class; no beans or state in common. `spring-kafka` is an optional dependency of
+  common, so the gateway doesn't get it.
 - **HTTP error bodies are `ProblemDetail`** (RFC 9457), built into Spring 6. A standard
   shape rather than one we invent, and the one Spring MVC already uses for its own
   errors.
@@ -158,15 +165,23 @@ loop forever (dozens of identical errors per millisecond), never reaching the ne
 record. In production that happens to a test message sent from Redpanda Console, or
 to any record left in the topic after its DTO class is renamed or moved.
 
-#### 5. Kafka error handler in ingestion and media — ⬜
+#### 5. Kafka error handler in ingestion and media — ✅ DONE 2026-10-12
 
-Same configuration in both. Ingestion swaps `spring-rabbit-test` for
-`spring-kafka-test`.
+The report step moves from rag's config into `cortex-common` as
+`KafkaFailures.reportAndSkip` (see Decisions), and rag's bean uses it. Ingestion and
+media get the same bean, each with its own `fileId` lookup (`PipelineEventDTO`,
+`FileIngestionEventDTO`), and `ErrorHandlingDeserializer`. Ingestion swaps
+`spring-rabbit-test` for `spring-kafka-test`.
 
-**DoD:** Ingestion test: a `cortex.pipeline.events` record whose save throws
-produces one ERROR line, one save attempt, and the next record is consumed. Media
-needs no listener test of its own: its listener only hands off (brick 2 covers the
-job).
+**DoD:** `KafkaFailuresTest` (no broker): one ERROR line with the `fileId` and the
+record's topic, partition and offset; none for an unreadable record; a lookup that
+throws still reports, and nothing escapes; the caller's MDC is left as it was.
+Brick 4's `MediaChunkListenerBoundaryTest` passes unchanged on the refactored rag
+bean. `PipelineEventsListenerBoundaryTest` in ingestion: a record whose save throws
+gives one ERROR line with its `fileId`, one save attempt, and the next record is
+consumed; a non-JSON record gives one ERROR line and the next record is consumed.
+Media needs no listener test of its own: its listener only hands off (brick 2 covers
+the job).
 
 #### 6. Sends wait for the broker: the helper, ingestion and rag — ⬜
 
