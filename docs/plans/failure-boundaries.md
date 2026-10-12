@@ -1,11 +1,11 @@
 # Failure boundaries
 
-**Status:** Slice 1 in progress: bricks 1–4 done. Every media thread, the media job,
-and each conversation answer run inside `BackgroundTask`; rag's Kafka listener reports
-a failed or unreadable record once and moves on, and so do ingestion's and media's,
-through the shared `KafkaFailures` report. Next is brick 6, Kafka sends that wait for
-the broker. Slice 3 gets its own planning pass once Slices 1 and 2
-land.
+**Status:** Slice 1 in progress: bricks 1–6 done. Next is brick 7, the sends in media.
+Every media thread, the media job, and each conversation answer run inside
+`BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
+through the shared `KafkaFailures` report, and moves on. **Before merging to `master`:
+Done when step 0 (raise the Pub/Sub ack deadline) — not done.** Slice 3 gets its own
+planning pass once Slices 1 and 2 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -64,8 +64,16 @@ throw.
 - **One wrapper for fire-and-forget tasks**, in `cortex-common`, doing both MDC and
   failure logging. It replaces `MdcUtils.withMDC`, so no thread can have one without
   the other.
-- **The send helper waits on a `CompletableFuture`**, not on a `KafkaTemplate`, so it
-  lives in `cortex-common` without adding Kafka to that module. Timeout: 10 seconds.
+- **The send helper waits on a `CompletableFuture`**, not on a `KafkaTemplate`, and
+  lives in `cortex-common`'s `kafka` package next to `KafkaFailures`.
+- **The producer decides when a send has failed, not the helper.** The Kafka producer
+  already retries a send on its own for up to `delivery.timeout.ms` (2 minutes by
+  default) before it reports failure. The helper waits longer than that (150 s), so
+  its own timeout never fires first: with a shorter wait, a broker that's away for 15
+  s would be reported as a failed send that then arrives anyway. A failed send
+  therefore means the broker was unreachable for two minutes, not for a moment. Every
+  send waits, progress events included: by then the next state-carrying send would
+  fail too.
 - **Kafka error handler:** Spring Kafka's `DefaultErrorHandler` with zero retries,
   wired as each service's `CommonErrorHandler` bean, and `ErrorHandlingDeserializer`
   in front of the JSON deserializer.
@@ -183,15 +191,29 @@ consumed; a non-JSON record gives one ERROR line and the next record is consumed
 Media needs no listener test of its own: its listener only hands off (brick 2 covers
 the job).
 
-#### 6. Sends wait for the broker: the helper, ingestion and rag — ⬜
+#### 6. Sends wait for the broker: the helper, ingestion and rag — ✅ DONE 2026-10-12
 
-The helper in `cortex-common`, then the 7 sends in `KafkaProducerService` and
-`OrchestrationService`.
+The helper in `cortex-common`, `KafkaSends.await(send)`, then the 7 sends in
+`KafkaProducerService` and `OrchestrationService`.
 
-**DoD:** Unit test: a send whose future completes exceptionally makes the helper
-throw with the original cause; one that never completes throws after the timeout.
-Rag test: with `KafkaTemplate` faked to return a failed future for
-`EMBEDDING_COMPLETE`, the listener's boundary logs one ERROR line.
+**DoD:** `KafkaSendsTest`: a finished send returns its result; a failed one throws
+the original exception, unwrapped; one with no answer throws after the wait (a short
+one in the test); an interrupted wait puts the interrupt flag back. Ingestion: with
+`KafkaTemplate` faked to fail, `KafkaProducerService.sendFileIngestedEvent` throws
+(today it returns as if the send worked). Rag: with `KafkaTemplate` faked to fail
+`EMBEDDING_COMPLETE`, `processMediaChunk` throws (today it returns), so brick 4's
+boundary reports it.
+
+**Risk this creates, fixed outside the code — ⬜ NOT DONE:** the upload webhook now
+waits for its two sends, up to about two minutes while the broker is away. Pub/Sub
+waits for the webhook's answer only as long as the push subscription's **ack
+deadline** (10 s by default), then sends the notification again while the first
+request is still waiting. Both succeed, so media gets "file ingested" twice and
+processes the file twice (double ffmpeg work and Gemini/Groq cost). Before this
+brick the webhook answered at once, so this couldn't happen. Fix: raise the push
+subscription's ack deadline above 150 s (600 s is the maximum) in the GCP console.
+Local runs can't show this: in development the webhook is called from Postman, not
+by Pub/Sub. Listed as step 0 of Done when, so it isn't forgotten at merge.
 
 #### 7. Sends wait for the broker: media — ⬜
 
@@ -300,6 +322,12 @@ catch goes.
 
 ## Done when
 
+0. **⬜ NOT DONE — before merging to `master`:** in the GCP console, raise the
+   ack deadline of the Pub/Sub push subscription that calls the upload webhook to
+   more than 150 s (600 s is the maximum). Without it, a short Kafka outage makes
+   Pub/Sub send the same upload notification twice and the file is processed twice
+   (see brick 6). Not checkable locally: in development the webhook is called from
+   Postman. Tick this line when it's done.
 1. `mvn -B verify` is green.
 2. Locally (`docker compose up -d postgres redis kafka`, services on the dev profile),
    upload a short normal video. It completes, and no service logs an ERROR line.
@@ -308,9 +336,10 @@ catch goes.
    still sees three attempts per chunk: `TranscriptionService` has its own retry
    loop, which Slice 3 looks at.)
 4. Stop the Kafka container while a file is chunking. Media logs one ERROR line with
-   the `fileId`, from the job's boundary. Expect it to take up to a minute: the
-   producer blocks for `max.block.ms` (60 s by default) before a send fails, which
-   is before the helper's 10-second wait even starts.
+   the `fileId`, from the job's boundary. Expect it to take one to two minutes: the
+   producer waits up to `max.block.ms` (60 s) for topic metadata, and retries a send
+   for up to `delivery.timeout.ms` (2 minutes) before it reports a failure.
+   `KafkaSends` waits 150 s, so the producer's answer always comes first.
 5. Ask for another user's file id (`DELETE /api/v1/files/<id>`) through the gateway.
    The answer is 404, not 500.
 6. Grep `src/main` for `catch (`: every hit is a boundary handler, a re-throw, or has

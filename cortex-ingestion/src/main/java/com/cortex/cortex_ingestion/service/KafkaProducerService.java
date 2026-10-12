@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.KafkaSends;
 
 import lombok.RequiredArgsConstructor;
 
@@ -27,11 +28,11 @@ public class KafkaProducerService {
   public void sendFileIngestedEvent(FileIngestionEventDTO event) {
     String topic = determineTopic(event.getContentType());
 
-    kafkaTemplate.send(topic, event.getFileId().toString(), event);
+    KafkaSends.await(kafkaTemplate.send(topic, event.getFileId().toString(), event));
   }
 
   public void sendPipelineEvent(PipelineEventDTO event) {
-    kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(), event);
+    KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(), event));
   }
 
   private String determineTopic(String contentType) {
