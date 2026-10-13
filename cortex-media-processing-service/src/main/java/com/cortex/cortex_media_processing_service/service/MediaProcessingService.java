@@ -33,6 +33,7 @@ import org.springframework.stereotype.Service;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.MediaFileManifestDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.KafkaSends;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
@@ -118,7 +119,7 @@ public class MediaProcessingService {
         fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
         fileMetadataRepository.save(fileMetadata);
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        sendPipelineEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
                 .message("This file appears to be corrupted and cannot be processed. It will be deleted.")
                 .metadata(Map.of(
@@ -151,7 +152,7 @@ public class MediaProcessingService {
                 "fileStatus", fileMetadata.getFileStatus().toString()))
             .build();
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+        sendPipelineEvent(fileId.toString(), pipelineEventDTO);
 
         return;
       }
@@ -185,14 +186,15 @@ public class MediaProcessingService {
         fileMetadataRepository.updatePlaybackReady(fileId, objectName);
       } else {
         normalisationThread = Thread.startVirtualThread(BackgroundTask.of("normalisation", () -> {
+          normalisationSlots.acquire();
           try {
-            normalisationSlots.acquire();
+            // The sends stay outside the catch below: a failed send is not a failed
+            // normalisation, so it goes to the boundary and leaves playback as it is.
+            sendPipelineEvent(fileId.toString(),
+                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
+                    .message("Generating playback version").build());
 
             try {
-              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
-                      .message("Generating playback version").build());
-
               Path local = null;
               if (plan.equals(NormalisationEnum.REMUX)) {
                 local = remuxFile(streamUrl, workDir);
@@ -209,21 +211,22 @@ public class MediaProcessingService {
 
               fileMetadataRepository.updatePlaybackReady(fileId, destinationObjectName);
               Files.deleteIfExists(local);
-
-              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
-                      .message("Playback version is ready").build());
-            } finally {
-              normalisationSlots.release();
+            } catch (Exception e) {
+              log.error("Normalisation failed for {}", fileId, e);
+              // Persist the terminal playback state BEFORE announcing, so any
+              // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
+              fileMetadataRepository.updatePlaybackUnavailable(fileId);
+              sendPipelineEvent(fileId.toString(),
+                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
+                      .message("Playback version could not be generated").build());
+              return;
             }
-          } catch (Exception e) {
-            log.error("Normalisation failed for {}", fileId, e);
-            // Persist the terminal playback state BEFORE announcing, so any
-            // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
-            fileMetadataRepository.updatePlaybackUnavailable(fileId);
-            kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
-                    .message("Playback version could not be generated").build());
+
+            sendPipelineEvent(fileId.toString(),
+                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
+                    .message("Playback version is ready").build());
+          } finally {
+            normalisationSlots.release();
           }
         }));
       }
@@ -237,7 +240,7 @@ public class MediaProcessingService {
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+      sendPipelineEvent(fileId.toString(), pipelineEventDTO);
 
       Process ffmpegProcess = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
@@ -269,7 +272,7 @@ public class MediaProcessingService {
           manifestDTO.getVideoCodec());
       log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
 
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+      sendPipelineEvent(fileId.toString(),
           PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.CHUNKING_COMPLETE)
               .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
               .build());
@@ -376,7 +379,7 @@ public class MediaProcessingService {
   private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) {
     log.info("Probing media file: {}", streamUrl);
 
-    kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+    sendPipelineEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
             .message("Analyzing media file").build());
 
@@ -425,7 +428,7 @@ public class MediaProcessingService {
 
         log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        sendPipelineEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
                 .message("Media analyzed")
                 .metadata(Map.of(
@@ -724,7 +727,7 @@ public class MediaProcessingService {
       log.info("Uploading chunk: {}", fileName);
 
       // Upload event for pipeline
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_STARTED).chunkIndex(index)
           .message(mediaType + " chunk upload started").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -733,7 +736,7 @@ public class MediaProcessingService {
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.UPLOADED);
 
       // Upload event for pipeline
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
           .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -758,16 +761,16 @@ public class MediaProcessingService {
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
             .status(MediaChunk.Status.UPLOADED).userId(processContext.getUserId()).build());
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        sendPipelineEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
                 .eventType(PipelineEventEnum.MEDIA_CHUNK_READY).chunkIndex(index)
                 .message("Media chunk ready for processing").metadata(Map.of("chunkId", chunk.getId())).build());
 
-        kafkaTemplate.send("media-chunk-uploaded",
+        KafkaSends.await(kafkaTemplate.send("media-chunk-uploaded",
             ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).fileId(fileId).objectName(objectName)
                 .chunkIndex(index).start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s())
                 .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath())
-                .userId(processContext.getUserId()).build());
+                .userId(processContext.getUserId()).build()));
 
         processContext.getTotalChunks().incrementAndGet();
 
@@ -887,6 +890,14 @@ public class MediaProcessingService {
     }
     processContext.getChunkUploadStatusMap().put(path.toString(), UploadStatus.PENDING);
     processContext.getUploadQueue().offer(path);
+  }
+
+  /**
+   * Waits for the broker: a failed send throws here and fails the job, or the
+   * thread it runs on (ADR-0014).
+   */
+  private void sendPipelineEvent(String key, PipelineEventDTO event) {
+    KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
   }
 
   private int extractChunkNumber(String fileName) {

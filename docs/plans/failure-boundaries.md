@@ -1,9 +1,10 @@
 # Failure boundaries
 
-**Status:** Slice 1 in progress: bricks 1–6 done. Next is brick 7, the sends in media.
+**Status:** Slice 1 done (bricks 1–7). Next is Slice 2, brick 8.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
-through the shared `KafkaFailures` report, and moves on. **Before merging to `master`:
+through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
+the broker. **Before merging to `master`:
 Done when step 0 (raise the Pub/Sub ack deadline) — not done.** Slice 3 gets its own
 planning pass once Slices 1 and 2 land.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
@@ -39,6 +40,8 @@ throw.
 - **`ChatController` and the old chat path behind it** (`ChatService`,
   `VertexAnswerGenerator`). Marked `@Deprecated`; nothing in the frontend calls them,
   and they will be deleted rather than fixed.
+- **Normalisation in its own service class.** `MediaProcessingService` is too large;
+  this is a refactor, done after this plan.
 
 ## Decisions
 
@@ -215,13 +218,25 @@ subscription's ack deadline above 150 s (600 s is the maximum) in the GCP consol
 Local runs can't show this: in development the webhook is called from Postman, not
 by Pub/Sub. Listed as step 0 of Done when, so it isn't forgotten at merge.
 
-#### 7. Sends wait for the broker: media — ⬜
+#### 7. Sends wait for the broker: media — ✅ DONE 2026-10-13
 
-The 13 sends in `MediaProcessingService`.
+The 13 sends in `MediaProcessingService`, through a private `sendPipelineEvent` as in
+rag, plus `KafkaSends.await` on the `media-chunk-uploaded` send.
 
-**DoD:** With `KafkaTemplate` faked to fail on `CHUNKING_STARTED`, the job's
-boundary logs one ERROR line and ffmpeg is never started. Grep: no
-`kafkaTemplate.send(` in `src/main` whose result is dropped.
+The normalisation thread's catch now covers only the work (ffmpeg, the upload,
+setting `READY`), not its three sends. Before, a failed `NORMALISATION_COMPLETE`
+send would have overwritten `READY` with `UNAVAILABLE` for a file that plays. Now a
+failed send goes to the thread's boundary and leaves playback as it is (`PENDING` if
+`NORMALISATION_STARTED` failed).
+
+The upload worker's catch is unchanged: a failed send there is logged as "Upload
+failed" and the chunk is marked `FAILED`. See Slice 3.
+
+**DoD:** `MediaJobBoundaryTest`, with `KafkaTemplate` faked to fail every send. Before
+the change: the job ignored the failed `PROBE_STARTED` send, ran ffprobe, and failed
+there with four ERROR lines, none about Kafka. After it: one ERROR line, from the job's
+boundary, with the `fileId` and the send's exception in its causes. Grep: every
+`kafkaTemplate.send(` in `src/main` is inside `KafkaSends.await`.
 
 ### Slice 2 — HTTP and gRPC boundaries give the right answer
 
@@ -312,6 +327,19 @@ sent from inside the parser's callback. It logs "streamed answer was not the exp
 JSON" at WARN, keeps reading the model's stream to the end of the round (tokens paid
 for, nobody listening), and only stops when the final uncited segment's send fails.
 That catch must let the disconnect through.
+
+**A chunk whose send fails can leave a hole in the file.** The upload worker's catch
+also catches a failed send (brick 7): it logs "Upload failed" and marks the chunk
+`FAILED`. Cleanup tries each `FAILED` chunk once more. If the send that failed came
+after `mediaChunkRepository.save` (`MEDIA_CHUNK_READY` or `media-chunk-uploaded`), the
+second try hits `uq_media_chunk_file_chunk` and fails again, even with the broker back.
+Cleanup then only logs a WARN, and the job saves a `totalChunks` without that chunk,
+so the file completes with a hole. ADR-0014's target: the worker hands its failure to
+the job, and the job fails. The `catch` in `cleanUpWorkingDir` must let that through.
+
+**ffprobe's catches wrap a failed `PROBE_COMPLETE` send.** That send is inside both
+catches in `probeMediaFile`, so its failure is logged twice as "FFprobe process
+failed" before it reaches the boundary.
 
 **Cleanup goes in `finally`, not `catch`.** Letting a failure propagate must not skip
 cleanup. Today `processMedia` deletes its work directory only on the success path,
