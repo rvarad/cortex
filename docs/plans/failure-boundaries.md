@@ -1,6 +1,7 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Next is Slice 2, brick 8.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: brick 8 done. Next is
+brick 9, rag's `@RestControllerAdvice`.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -244,24 +245,34 @@ boundary, with the `fileId` and the send's exception in its causes. Grep: every
 anything else a 500 with a generic body; Pub/Sub retries only what can succeed later;
 a failed user sync fails the login.
 
-#### 8. Ingestion: one `@RestControllerAdvice` — ⬜
+#### 8. Ingestion: one `@RestControllerAdvice` — ✅ DONE 2026-10-13 (browser check ⬜)
 
-A not-found exception type. `FilesService` and `GcsStorageService` stop wrapping in
-`RuntimeException`. `server.error.include-message=always` removed. Error bodies are
-Spring's `ProblemDetail` (RFC 9457), the same shape Spring MVC uses for its own
-errors when `spring.mvc.problemdetails.enabled` is on, so every error from the
-service has one shape.
+`ApiExceptionHandler` extends Spring's `ResponseEntityExceptionHandler`, which already
+answers `ResponseStatusException`, validation and the like with a `ProblemDetail`
+(RFC 9457). Anything else is a 500 with a generic `detail`. Each failure is logged
+once there: 4xx at WARN with the `detail`, 5xx at ERROR with the stack trace, with the
+`fileId` from the path in MDC. A validation 400's `detail` is our DTO messages.
 
-Frontend: `request()` in `api.ts` puts the raw response body into `ApiError`'s
-message, and the delete, rename and upload dialogs show that message to the user
-as-is. It learns to read `application/problem+json` and use its `detail`, falling
-back to `title`.
+Not-found is `ResponseStatusException(NOT_FOUND, "File not found")`, the pattern
+`signPlaybackUrl` and `subscribeToEvents` already used; no new exception type.
+`FilesService` and the HTTP paths of `GcsStorageService` (`getPresignedURL`,
+`signPlaybackUrl`) stop wrapping in `RuntimeException`. `handleFileUploadSuccess` is
+the webhook's, left for brick 10. `server.error.include-message=always` removed.
 
-**DoD:** `@WebMvcTest` on `FilesController`: deleting or renaming another user's file
-is 404 (today it's 500); an unexpected exception is a 500 whose body contains no
-exception text; each logs once. Both bodies are `application/problem+json` with
-`status` and `title` set. In the browser, a failed rename shows a sentence in the
-toast, not JSON.
+Frontend: `request()` in `api.ts` reads `application/problem+json` and uses its
+`detail`, then `title`. The rename, delete and upload dialogs already show the
+error's message.
+
+**DoD:** `FilesErrorResponsesTest`, standalone MockMvc with the real services and
+faked repositories. Not `@WebMvcTest`: the application class enables JPA repositories,
+so a slice would try to build them with no database. Deleting or renaming another
+user's file is 404 with one WARN line carrying the `fileId`; a bad display name is 400
+with the DTO's message as `detail`; a rejected file's playback keeps its 410; an
+unexpected exception is a 500 whose body has no exception text, with one ERROR line.
+All `application/problem+json`. Before the change, confirmed by running it: the three
+`RuntimeException` paths escaped unhandled (a 500 in a running service, logged twice),
+and the 400 and 410 had no body. In the browser, renaming a file to `a#b` shows
+"Display name contains invalid characters" in the toast, not JSON.
 
 #### 9. Rag: one `@RestControllerAdvice` — ⬜
 

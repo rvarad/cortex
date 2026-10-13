@@ -101,10 +101,6 @@ public class GcsStorageService {
 
       return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
           .expiresIn(LocalDateTime.now().plusMinutes(expirationTime)).build();
-
-    } catch (Exception e) {
-      log.error("[GCSService] Error generating presigned URL: {}", e.getMessage());
-      throw new RuntimeException("Error generating presigned URL", e);
     } finally {
       MDC.remove("fileId");
     }
@@ -221,19 +217,13 @@ public class GcsStorageService {
 
     String playbackObject = fileMetadata.getPlaybackObjectName();
 
-    try {
-      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
-      URL url = storage.signUrl(blobInfo, playbackUrlExpiryHours, TimeUnit.HOURS,
-          Storage.SignUrlOption.httpMethod(HttpMethod.GET), Storage.SignUrlOption.withV4Signature());
+    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
+    URL url = storage.signUrl(blobInfo, playbackUrlExpiryHours, TimeUnit.HOURS,
+        Storage.SignUrlOption.httpMethod(HttpMethod.GET), Storage.SignUrlOption.withV4Signature());
 
-      Instant expiresAt = Instant.now().plus(Duration.ofHours(playbackUrlExpiryHours));
+    Instant expiresAt = Instant.now().plus(Duration.ofHours(playbackUrlExpiryHours));
 
-      return PlaybackUrlResponseDTO.builder().playbackUrl(url.toString()).expiresAt(expiresAt)
-          .hasVideo(fileMetadata.getHasVideo()).build();
-
-    } catch (Exception e) {
-      log.error("[GCSService] Error getting playback url for fileId : {}", fileId, e);
-      throw new RuntimeException("Error getting playback url for fileId : " + fileId + " : " + e);
-    }
+    return PlaybackUrlResponseDTO.builder().playbackUrl(url.toString()).expiresAt(expiresAt)
+        .hasVideo(fileMetadata.getHasVideo()).build();
   }
 }

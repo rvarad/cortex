@@ -25,6 +25,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A sentence to show the user. Ingestion answers errors with an RFC 9457
+ * problem body: `detail` says what went wrong, `title` is the status's name.
+ * Any other body is passed on as it is.
+ */
+async function errorMessage(res: Response): Promise<string> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/problem+json")) {
+    const problem = await res.json().catch(() => null);
+    return problem?.detail || problem?.title || res.statusText || "Request failed";
+  }
+  return res.text().catch(() => "Unknown error");
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -46,8 +60,7 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "Unknown error");
-    throw new ApiError(res.status, text);
+    throw new ApiError(res.status, await errorMessage(res));
   }
 
   // Handle 204 No Content
