@@ -1,7 +1,7 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: brick 8 done. Next is
-brick 9, rag's `@RestControllerAdvice`.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: bricks 8–9 done. Next is
+brick 10, the webhook's status codes.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -274,16 +274,34 @@ All `application/problem+json`. Before the change, confirmed by running it: the 
 and the 400 and 410 had no body. In the browser, renaming a file to `a#b` shows
 "Display name contains invalid characters" in the toast, not JSON.
 
-#### 9. Rag: one `@RestControllerAdvice` — ⬜
+#### 9. Rag: one `@RestControllerAdvice` — ✅ DONE 2026-10-13
 
-Same for search, chats and conversations, with `ProblemDetail` bodies as in brick 8.
-The streaming endpoints are the exception: once the 200 and the first event have
-gone out, a failure can't change the status. Those failures end the stream without
-`done`, which the frontend already reads as "cut off".
+A copy of ingestion's `ApiExceptionHandler`, in rag's `exception` package, not a shared
+class. Two services, and the two already differ; extract when a third copy appears
+or when observability changes both (rule of three). Each copy has its own test.
 
-**DoD:** `@WebMvcTest` on `ConversationController` and `SearchController`: another
-user's conversation is 404, an unexpected exception is a generic 500, each logged
-once, both as `application/problem+json`.
+Rag's differences: the `{id}` path variable goes into MDC as `conversationId`; and a
+failure inside an answer stream is answered here but not logged. It comes back
+through `completeWithError` on an async dispatch, after `SseEvents.answering` has
+logged it. Spring commits the stream on its **first event**, not when the emitter is
+returned (found by running it). So an answer that fails before any event still gets a
+real 500 `ProblemDetail`; after the first event nothing can be sent, and the stream
+ends without `done`, which the frontend reads as "cut off". Rag's not-found was
+already `ResponseStatusException`.
+
+Frontend: the streaming call in `api.ts` reads problem bodies like `request()`.
+
+**DoD:** `RagErrorResponsesTest`, standalone MockMvc as in brick 8, with the real
+`ConversationService`. Another user's conversation is 404 with one WARN line carrying
+the `conversationId`, also on the streaming endpoint, which asks for
+`text/event-stream`; an empty question is 400 with the DTO's message; an unexpected
+search failure is a generic 500 with one ERROR line; an answer that fails after its
+first event, or before any, gives exactly one ERROR line, from `BackgroundTask` (the
+second case also a 500 body). Before the change: the 404s and the 400 had no body,
+the search failure escaped unhandled, and a failing answer's second dispatch escaped
+too. With the handler but without the async rule, a failing answer logged twice. The
+test requests send `Accept: application/json`, as the browser does: rag has an XML
+converter, which standalone MockMvc, unlike Spring Boot, puts before the JSON one.
 
 #### 10. Webhook: the status code tells Pub/Sub what to do — ⬜
 

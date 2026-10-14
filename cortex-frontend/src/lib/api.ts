@@ -327,8 +327,7 @@ export async function streamConversationMessage(
   });
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new ApiError(response.status, text || response.statusText);
+    throw new ApiError(response.status, await errorMessage(response));
   }
 
   if (!response.body) {
