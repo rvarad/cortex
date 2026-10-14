@@ -1,7 +1,7 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: bricks 8–9 done. Next is
-brick 10, the webhook's status codes.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: bricks 8–10 done. Next is
+brick 11, login fails when the user sync fails.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -303,13 +303,31 @@ too. With the handler but without the async rule, a failing answer logged twice.
 test requests send `Accept: application/json`, as the browser does: rag has an XML
 converter, which standalone MockMvc, unlike Spring Boot, puts before the JSON one.
 
-#### 10. Webhook: the status code tells Pub/Sub what to do — ⬜
+#### 10. Webhook: the status code tells Pub/Sub what to do — ✅
 
 Unknown object or malformed body: 2xx and an ERROR line. Anything that may pass
 (database or GCS failing): 5xx.
 
 **DoD:** `@WebMvcTest` on `WebhookController`: unknown object name → 2xx; a body with
 no object name → 2xx; storage faked to throw → 5xx. Each logs once.
+
+**Done:** `WebhookResponsesTest`, standalone MockMvc for the same reason as brick 8,
+with the real `GcsStorageService`. Five cases: no file for the object → 200; object no
+longer in GCS → 200; no object name → 200; a body that is not JSON → 200; GCS failing
+→ 500. Each logs one ERROR line. The 500 line is the advice's and carries the
+`fileId`; MDC is empty after the request. Before: 500, 500, 400, 400, and the GCS
+failure logged twice (the service's wrapping catch, then the advice) with no `fileId`.
+
+`handleFileUploadSuccess` lost its wrapping catch. An object that can never be
+processed throws `ResponseStatusException(NOT_FOUND)`, as in brick 8. A handler in
+`WebhookController` turns that, and an unreadable body, into 200 and one ERROR line; it
+wins over the advice, so the rest of the API keeps its 4xx. Everything else goes to the
+advice: 500.
+
+`MdcCleanupFilter` (new, ingestion) clears MDC when each request ends. Code below the
+boundary now leaves `fileId` in MDC, so the advice's line still has it;
+`GcsStorageService` no longer removes it. Later, tracing puts its ids in at the same
+place.
 
 #### 11. Login fails when the user sync fails — ⬜
 
