@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Brain, Sparkles, Upload, Search } from "lucide-react";
 import { motion } from "framer-motion";
+import { toast } from "sonner";
 
 export default function LandingPage() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -18,6 +19,15 @@ export default function LandingPage() {
       router.replace("/dashboard");
     }
   }, [isLoading, isAuthenticated, router, pathname]);
+
+  // The gateway sends a failed login back here with ?login=failed.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("login") === "failed") {
+      // A fixed id: Strict Mode runs this twice in dev, before the URL changes.
+      toast.error("Sign-in failed. Please try again.", { id: "login-failed" });
+      router.replace("/");
+    }
+  }, [router]);
 
   if (isLoading) {
     return (

@@ -1,7 +1,7 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Slice 2 in progress: bricks 8–10 done. Next is
-brick 11, login fails when the user sync fails.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Next is the
+planning pass for Slice 3.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -329,20 +329,43 @@ boundary now leaves `fileId` in MDC, so the advice's line still has it;
 `GcsStorageService` no longer removes it. Later, tracing puts its ids in at the same
 place.
 
-#### 11. Login fails when the user sync fails — ⬜
+#### 11. Login fails when the user sync fails — ✅
 
-`OAuth2LoginSuccessHandler` gets its gRPC stub injected (today it builds one in its
-constructor, which a test can't replace) and lets a sync failure propagate.
+The first plan was to let the sync failure propagate out of
+`OAuth2LoginSuccessHandler`. That is not enough: Spring saves the login to the
+session **before** it calls the success handler, so the user would see an error page
+and still be logged in, with no `users` row.
 
-On the ingestion side, the gRPC boundary handler is a `GrpcExceptionHandler` bean,
-Spring gRPC's hook for failures in served calls (in `spring-grpc-core` 0.12.0).
-`UserGrpcService` stops catching and calling `onError` itself, which is a hand-built
-copy of that hook.
+So the sync moved to the step that loads the user. `SyncingOidcUserService` (gateway;
+Google login is OIDC) loads the user through Spring's `OidcUserService`, then makes
+the same gRPC call. A failed call becomes `OAuth2AuthenticationException`
+(`user_sync_failed`): Spring treats the login as failed, saves no session, and calls
+`LoginFailureHandler`. That is the login's boundary: it logs once (ERROR with the
+cause for a failed sync, WARN for anything else, such as the user cancelling at
+Google) and redirects to the frontend with `?login=failed`, which shows a toast. The
+stub is a bean (`GrpcClientConfig`). `OAuth2LoginSuccessHandler` is gone; its
+redirect is `defaultSuccessUrl(..., true)`.
 
-**DoD:** Unit test: stub faked to throw → the handler throws and does not redirect to
-the dashboard. Today the same test shows a redirect. Test on the ingestion side:
-`UserRepository` faked to throw → the caller gets `INTERNAL`, one ERROR line, and
-`UserGrpcService` has no `catch`.
+Ingestion: `GrpcCallExceptionHandler`, a `GrpcExceptionHandler` bean, is the gRPC
+boundary. Spring gRPC's `GrpcExceptionHandlerInterceptor` calls it when a served call
+throws; it logs once and answers `INTERNAL` with no internal text. `UserGrpcService`
+has no `catch`.
+
+**DoD:** `SyncingOidcUserServiceTest`: the stub throws → `user_sync_failed` with the
+cause, nothing logged; the stub succeeds → the user's details were sent.
+`LoginFailureHandlerTest`: both kinds of failure redirect to `?login=failed` with one
+line at the right level. `UserGrpcBoundaryTest`: in-process server, the real
+`UserGrpcService` behind Spring's interceptor; the repository throws → `INTERNAL`,
+one ERROR line from the boundary; and component scanning installs the handler.
+
+Before: the shells failed all six, and the ingestion ERROR line came from
+`UserGrpcService`. After: green.
+
+Browser check (user) ⬜: stop ingestion, log in → landing page with the toast; open
+`/dashboard` → back to the landing page, not logged in.
+
+Not doing: a deadline on the sync call (a hung ingestion hangs login) — "Timeouts on
+outbound calls".
 
 ### Slice 3 — remove the catches below the boundaries
 
