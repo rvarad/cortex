@@ -21,7 +21,7 @@ import { AttachmentPicker } from "./attachment-picker";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft,
+  ArrowDown,
   Check,
   ChevronDown,
   FileAudio,
@@ -39,6 +39,9 @@ import {
 import Link from "next/link";
 
 const MAX_ATTACHMENTS = 3;
+// Within this distance of the bottom, the list counts as "at the bottom" and
+// follows a streaming answer.
+const FOLLOW_SLACK_PX = 40;
 
 interface Attachment {
   fileId: string;
@@ -156,12 +159,17 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
   // can never leave a stale one behind.
   const [createdId, setCreatedId] = useState<string | null>(null);
   const chatId = conversationId ?? createdId;
+  const [title, setTitle] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(Boolean(conversationId));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  // False once the user scrolls up to read: the stream stops pulling them back
+  // down and the jump-to-bottom button shows. Scrolling to the bottom again,
+  // or sending, turns it back on.
+  const [atBottom, setAtBottom] = useState(true);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -220,6 +228,8 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
     if (!conversationId) return;
 
     let cancelled = false;
+    setAtBottom(true);
+    setTitle(null);
     setIsLoading(true);
     setLoadError(null);
 
@@ -227,6 +237,7 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
       try {
         const conversation = await getConversation(conversationId);
         if (cancelled) return;
+        setTitle(conversation.title);
         setMessages(toMessages(conversation.messages));
       } catch (error) {
         if (cancelled) return;
@@ -253,8 +264,15 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
 
   useEffect(() => {
     const element = scrollRef.current;
+    if (element && atBottom) element.scrollTop = element.scrollHeight;
+  }, [messages, atBottom]);
+
+  // Instant, not smooth: a smooth scroll during a stream chases a bottom that
+  // keeps moving, and each scroll event on the way reads as "not at bottom".
+  function jumpToBottom() {
+    const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;
-  }, [messages]);
+  }
 
   function attach(file: Pick<FileItem, "fileId" | "fileDisplayName">) {
     setAttached((current) => {
@@ -297,6 +315,7 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
     setAttached([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
+    setAtBottom(true);
     setMessages((previous) => [
       ...previous,
       { role: "user", text: question, attachments: scope },
@@ -317,6 +336,9 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
       if (!id) {
         id = (await createConversation()).id;
         setCreatedId(id);
+        // The server titles a chat with its first question, so show that now
+        // rather than wait for the sidebar refresh after the answer.
+        setTitle(question);
 
         // replaceState, not router.replace: /chat and /chat/[id] are different
         // route segments, so a navigation would remount this component and
@@ -394,143 +416,195 @@ export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
     }
   }
 
+  // A stored chat shows nothing until its title loads, and nothing if the load
+  // fails; only a fresh chat is "New chat".
+  const heading = title ?? (chatId ? "" : "New chat");
+
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-6">
-      <div className="mb-4">
-        <Link
-          href="/dashboard"
-          className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to files
-        </Link>
-      </div>
+    // min-h-0 lets this column shrink to the screen; without it the column
+    // grows with its content and the whole page scrolls, input and all.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* Floats over the list, which scrolls underneath it. z-20: above the
+          list's top fade (z-10), which comes later in the DOM. */}
+      {heading && (
+        <header className="absolute top-3 left-3 z-20 max-w-[25%] rounded-lg bg-card px-3 py-1.5">
+          <h1 className="truncate text-sm font-medium" title={heading}>
+            {heading}
+          </h1>
+        </header>
+      )}
 
-      <div ref={scrollRef} className="flex-1 space-y-6 overflow-y-auto pb-4">
-        {isLoading && (
-          <div className="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading chat…
-          </div>
-        )}
+      {/* Full height and full width, so the scrollbar sits at the edge and
+          the wheel works anywhere; the content inside is centered. */}
+      <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          setAtBottom(
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+              FOLLOW_SLACK_PX
+          );
+        }}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+      >
+        {/* Top fade: messages fade out as they scroll up under the chat
+            name. Inside the list so it never covers the scrollbar; -mb-12
+            cancels its height so it takes no room. */}
+        <div className="pointer-events-none sticky top-0 z-10 -mb-12 h-12 shrink-0 bg-linear-to-b from-background to-transparent" />
 
-        {loadError && (
-          <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-            <TriangleAlert className="h-6 w-6 text-amber-500" />
-            <p className="text-sm text-muted-foreground">{loadError}</p>
-            <Link
-              href="/chat"
-              className="text-sm text-primary underline-offset-4 hover:underline"
-            >
-              Start a new chat
-            </Link>
-          </div>
-        )}
+        {/* flex-1 makes this at least as tall as the scroll area, so the
+            input sits at the bottom even when the chat is short. */}
+        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4">
+          {/* pt-16 keeps the first message clear of the chat name; pb-16
+              keeps the last one clear of the bottom fade (h-12) with room to
+              spare. Change one fade height, change these too. */}
+          <div className="flex-1 space-y-6 pt-16 pb-16">
+            {isLoading && (
+              <div className="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading chat…
+              </div>
+            )}
 
-        {!isLoading && !loadError && messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="mb-4 rounded-xl bg-primary/10 p-4">
-              <MessageSquare className="h-8 w-8 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold">Chat with your library</h2>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              Attach up to {MAX_ATTACHMENTS} files to focus a question, or ask
-              across everything. Answers cite the moments they came from.
-            </p>
-          </div>
-        )}
-
-        {messages.map((message, index) =>
-          message.role === "user" ? (
-            <UserBubble key={index} message={message} />
-          ) : (
-            <AssistantBubble
-              key={index}
-              message={message}
-              files={files}
-              attachedIds={attachedIds}
-              atLimit={atLimit}
-              onCite={(source) => playSource(source, source.startTime)}
-              onPlay={(source) => playSource(source, 0)}
-              onAttach={attach}
-            />
-          )
-        )}
-      </div>
-
-      <div className="sticky bottom-0 border-t border-border/50 bg-background pt-3">
-        {attached.length > 0 && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {attached.map((item) => (
-              <span
-                key={item.fileId}
-                className="flex max-w-60 items-center gap-1.5 rounded-lg border border-border bg-muted/40 py-1 pr-1 pl-2 text-xs"
-                title={item.fileDisplayName}
-              >
-                <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="truncate">{item.fileDisplayName}</span>
-                <button
-                  type="button"
-                  onClick={() => detach(item.fileId)}
-                  aria-label={`Remove ${item.fileDisplayName}`}
-                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            {loadError && (
+              <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+                <TriangleAlert className="h-6 w-6 text-amber-500" />
+                <p className="text-sm text-muted-foreground">{loadError}</p>
+                <Link
+                  href="/chat"
+                  className="text-sm text-primary underline-offset-4 hover:underline"
                 >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <span className="ml-auto text-xs text-muted-foreground">
-              {attached.length}/{MAX_ATTACHMENTS}
-            </span>
+                  Start a new chat
+                </Link>
+              </div>
+            )}
+
+            {!isLoading && !loadError && messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="mb-4 rounded-xl bg-primary/10 p-4">
+                  <MessageSquare className="h-8 w-8 text-primary" />
+                </div>
+                <h2 className="text-lg font-semibold">Chat with your library</h2>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Attach up to {MAX_ATTACHMENTS} files to focus a question, or ask
+                  across everything. Answers cite the moments they came from.
+                </p>
+              </div>
+            )}
+
+            {messages.map((message, index) =>
+              message.role === "user" ? (
+                <UserBubble key={index} message={message} />
+              ) : (
+                <AssistantBubble
+                  key={index}
+                  message={message}
+                  files={files}
+                  attachedIds={attachedIds}
+                  atLimit={atLimit}
+                  onCite={(source) => playSource(source, source.startTime)}
+                  onPlay={(source) => playSource(source, 0)}
+                  onAttach={attach}
+                />
+              )
+            )}
           </div>
-        )}
 
-        <div className="flex items-end gap-2">
-          <AttachmentPicker
-            files={files}
-            attachedIds={attachedIds}
-            limit={MAX_ATTACHMENTS}
-            onAttach={attach}
-          />
+          {/* Sticky inside the list, not outside it: the list keeps the full
+              height and scrolls under the input, yet the last message still
+              ends above the input rather than hidden behind it. */}
+          <div className="sticky bottom-0 bg-background pb-4">
+            {/* Bottom fade: messages fade out as they scroll down into the
+                input. */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-full h-12 bg-linear-to-t from-background to-transparent" />
+            {!atBottom && (
+              <Button
+                variant="outline"
+                size="icon-lg"
+                onClick={jumpToBottom}
+                aria-label="Jump to the bottom"
+                title="Jump to the bottom"
+                className="absolute right-0 bottom-full mb-3 rounded-full bg-card shadow-md"
+              >
+                <ArrowDown />
+              </Button>
+            )}
+            <div className="rounded-2xl bg-card p-3">
+              {attached.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {attached.map((item) => (
+                    <span
+                      key={item.fileId}
+                      className="flex max-w-60 items-center gap-1.5 rounded-lg border border-border bg-muted/40 py-1 pr-1 pl-2 text-xs"
+                      title={item.fileDisplayName}
+                    >
+                      <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{item.fileDisplayName}</span>
+                      <button
+                        type="button"
+                        onClick={() => detach(item.fileId)}
+                        aria-label={`Remove ${item.fileDisplayName}`}
+                        className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {attached.length}/{MAX_ATTACHMENTS}
+                  </span>
+                </div>
+              )}
 
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={input}
-            onChange={(event) => {
-              setInput(event.target.value);
-              const element = event.target;
-              element.style.height = "auto";
-              element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              attached.length > 0
-                ? "Ask about the attached files…"
-                : "Ask about your library…"
-            }
-            className="max-h-40 flex-1 resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-          />
+              <div className="flex items-end gap-2">
+                <AttachmentPicker
+                  files={files}
+                  attachedIds={attachedIds}
+                  limit={MAX_ATTACHMENTS}
+                  onAttach={attach}
+                />
 
-          {isStreaming ? (
-            <Button
-              variant="outline"
-              size="lg"
-              onClick={() => abortRef.current?.abort()}
-              aria-label="Stop generating"
-            >
-              <Square className="fill-current" />
-            </Button>
-          ) : (
-            <Button
-              size="lg"
-              onClick={() => void send()}
-              disabled={input.trim().length === 0}
-              aria-label="Send question"
-            >
-              <Send />
-            </Button>
-          )}
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  value={input}
+                  onChange={(event) => {
+                    setInput(event.target.value);
+                    const element = event.target;
+                    element.style.height = "auto";
+                    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    attached.length > 0
+                      ? "Ask about the attached files…"
+                      : "Ask about your library…"
+                  }
+                  className="max-h-40 flex-1 resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                />
+
+                {isStreaming ? (
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={() => abortRef.current?.abort()}
+                    aria-label="Stop generating"
+                  >
+                    <Square className="fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="lg"
+                    onClick={() => void send()}
+                    disabled={input.trim().length === 0}
+                    aria-label="Send question"
+                  >
+                    <Send />
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
