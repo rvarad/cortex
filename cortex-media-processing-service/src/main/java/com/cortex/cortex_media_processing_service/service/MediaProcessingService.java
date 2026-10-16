@@ -106,14 +106,13 @@ public class MediaProcessingService {
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
-      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElseThrow(() -> {
-        log.error("[GCSService] File metadata not found for objectName: {}", objectName);
-        return new RuntimeException("File metadata not found for objectName: " + objectName);
-      });
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId)
+          .orElseThrow(() -> new IllegalStateException("File metadata not found for objectName: " + objectName));
 
       MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl, fileId);
       if (manifestDTO.isCorrupted()) {
-        log.error("Media file is corrupted: {}", objectName);
+        // WARN: a rejected upload is the user's input, not our failure.
+        log.warn("Media file is corrupted: {}", objectName);
         gcsStorageService.deleteObject(objectName);
         fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
         fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
@@ -211,7 +210,10 @@ public class MediaProcessingService {
 
               fileMetadataRepository.updatePlaybackReady(fileId, destinationObjectName);
               Files.deleteIfExists(local);
-            } catch (Exception e) {
+            } catch (Exception e) { // Carrying on is correct: the file stays searchable, only playback is lost.
+              if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+              }
               log.error("Normalisation failed for {}", fileId, e);
               // Persist the terminal playback state BEFORE announcing, so any
               // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
@@ -251,7 +253,6 @@ public class MediaProcessingService {
 
       int exitCode = ffmpegProcess.exitValue();
       if (exitCode != 0) {
-        log.error("FFmpeg process failed with exit code: {}", exitCode);
         throw new Exception("FFmpeg process failed with exit code: " + exitCode);
       }
 
@@ -315,7 +316,7 @@ public class MediaProcessingService {
     }
   }
 
-  private boolean isAudioSilent(String streamUrl) {
+  private boolean isAudioSilent(String streamUrl) throws InterruptedException {
     log.info("Checking if audio is silent: {}", streamUrl);
     Double maxVolume = null;
 
@@ -340,8 +341,8 @@ public class MediaProcessingService {
         return false;
 
       return maxVolume < SILENCE_FLOOR_DB;
-    } catch (Exception e) {
-      log.error("Error checking if audio is silent", e);
+    } catch (IOException | NumberFormatException e) { // "Not silent": a wasted transcription beats a lost one.
+      log.warn("Could not check if audio is silent; treating it as not silent", e);
       return false;
     }
   }
@@ -376,79 +377,67 @@ public class MediaProcessingService {
     return new String(data, position + 4, 4, StandardCharsets.US_ASCII);
   }
 
-  private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) {
+  private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) throws Exception {
     log.info("Probing media file: {}", streamUrl);
 
     sendPipelineEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
             .message("Analyzing media file").build());
 
-    try {
-      ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
-          "-show_format", "-show_streams",
-          streamUrl);
+    ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams",
+        streamUrl);
 
-      Process process = processBuilder.start();
+    Process process = processBuilder.start();
 
-      boolean video = false;
-      boolean audio = false;
+    boolean video = false;
+    boolean audio = false;
 
-      boolean audioStreamExists = false;
-      JsonNode realVideoStream = null;
+    boolean audioStreamExists = false;
+    JsonNode realVideoStream = null;
 
-      double duration_s = 0.0;
+    double duration_s = 0.0;
 
-      try {
-        JsonNode root = objectMapper.readTree(process.getInputStream());
+    JsonNode root = objectMapper.readTree(process.getInputStream());
 
-        duration_s = root.path("format").path("duration").asDouble(0.0);
+    duration_s = root.path("format").path("duration").asDouble(0.0);
 
-        for (JsonNode stream : root.path("streams")) {
-          String codecType = stream.path("codec_type").asText();
+    for (JsonNode stream : root.path("streams")) {
+      String codecType = stream.path("codec_type").asText();
 
-          if (codecType.equals("audio")) {
-            audioStreamExists = true;
-          } else if (codecType.equals("video")) {
-            int attachedPic = stream.path("disposition").path("attached_pic").asInt(0);
-            if (attachedPic != 1)
-              realVideoStream = stream;
-          }
-        }
-
-        audio = audioStreamExists && !isAudioSilent(streamUrl);
-        video = realVideoStream != null;
-
-        String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
-
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-          log.error("FFprobe process failed with exit code: {}", exitCode);
-          throw new Exception("FFprobe process failed with exit code: " + exitCode);
-        }
-
-        log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
-
-        sendPipelineEvent(fileId.toString(),
-            PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
-                .message("Media analyzed")
-                .metadata(Map.of(
-                    "hasVideo", video,
-                    "hasAudio", audio,
-                    "videoCodec", videoCodec == null ? "" : videoCodec,
-                    "durationSeconds", duration_s))
-                .build());
-
-        return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
-            .videoCodec(videoCodec).build();
-      } catch (Exception e) {
-        log.error("FFprobe process failed", e);
-        throw new RuntimeException("FFprobe process failed", e);
+      if (codecType.equals("audio")) {
+        audioStreamExists = true;
+      } else if (codecType.equals("video")) {
+        int attachedPic = stream.path("disposition").path("attached_pic").asInt(0);
+        if (attachedPic != 1)
+          realVideoStream = stream;
       }
-
-    } catch (Exception e) {
-      log.error("FFprobe process failed", e);
-      throw new RuntimeException("FFprobe process failed", e);
     }
+
+    audio = audioStreamExists && !isAudioSilent(streamUrl);
+    video = realVideoStream != null;
+
+    String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
+
+    int exitCode = process.waitFor();
+    if (exitCode != 0) {
+      throw new Exception("FFprobe process failed with exit code: " + exitCode);
+    }
+
+    log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
+
+    sendPipelineEvent(fileId.toString(),
+        PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
+            .message("Media analyzed")
+            .metadata(Map.of(
+                "hasVideo", video,
+                "hasAudio", audio,
+                "videoCodec", videoCodec == null ? "" : videoCodec,
+                "durationSeconds", duration_s))
+            .build());
+
+    return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
+        .videoCodec(videoCodec).build();
   }
 
   private Process startFFmpegChunkingProcess(String streamUrl, String videoPattern, String audioPattern,
@@ -494,20 +483,15 @@ public class MediaProcessingService {
    * Returns the local output file (caller uploads it + sets
    * playback_object_name).
    */
-  private Path remuxFile(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.mp4");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:v:0", "-map", "0:a:0?",
-          "-c", "copy",
-          "-movflags", "+faststart",
-          output.toString());
-      runNormalization(command, "REMUX");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to remux file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to remux file : " + streamUrl, e);
-    }
+  private Path remuxFile(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.mp4");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        output.toString());
+    runNormalization(command, "REMUX");
+    return output;
   }
 
   /**
@@ -515,42 +499,32 @@ public class MediaProcessingService {
    * h264. `-pix_fmt yuv420p` is mandatory — iPhone HEVC is often 10-bit HDR, and
    * without forcing 8-bit 4:2:0 the h264 output still won't play in Chrome.
    */
-  private Path transcodeVideo(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.mp4");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:v:0", "-map", "0:a:0?",
-          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-b:a", "128k",
-          "-movflags", "+faststart",
-          "-threads", "2",
-          output.toString());
-      runNormalization(command, "TRANSCODE_VIDEO");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
-    }
+  private Path transcodeVideo(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.mp4");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-threads", "2",
+        output.toString());
+    runNormalization(command, "TRANSCODE_VIDEO");
+    return output;
   }
 
   /**
    * TRANSCODE_AUDIO: WAV (uncompressed) to AAC/m4a — a ~10:1 storage/bandwidth
    * win.
    */
-  private Path transcodeAudio(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.m4a");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:a:0", "-vn",
-          "-c:a", "aac", "-b:a", "192k",
-          "-movflags", "+faststart",
-          output.toString());
-      runNormalization(command, "TRANSCODE_AUDIO");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
-    }
+  private Path transcodeAudio(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.m4a");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:a:0", "-vn",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        output.toString());
+    runNormalization(command, "TRANSCODE_AUDIO");
+    return output;
   }
 
   /**
@@ -582,7 +556,7 @@ public class MediaProcessingService {
     log.info("Normalization ({}) completed successfully: {}", label, command.get(command.size() - 1));
   }
 
-  private void monitorFFmpegOutput(Process process) {
+  private void monitorFFmpegOutput(Process process) throws IOException {
     try (BufferedReader reader = new BufferedReader(
         new InputStreamReader(process.getInputStream()))) {
       String line;
@@ -591,8 +565,6 @@ public class MediaProcessingService {
         log.info("FFmpeg info: {}", line);
         // Could parse progress here for metrics
       }
-    } catch (IOException e) {
-      log.error("Error reading FFmpeg output", e);
     }
   }
 
@@ -642,7 +614,7 @@ public class MediaProcessingService {
         WatchKey key;
         try {
           key = watchService.poll(500, TimeUnit.MILLISECONDS);
-        } catch (ClosedWatchServiceException e) {
+        } catch (ClosedWatchServiceException e) { // Closed means the watcher is done: stop watching.
           break;
         } catch (Exception e) {
           log.error("Error watching directory", e);
@@ -851,7 +823,7 @@ public class MediaProcessingService {
             .forEach(path -> {
               try {
                 Files.deleteIfExists(path);
-              } catch (IOException e) {
+              } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
                 log.warn("Failed to delete: {}", path, e);
               }
             });
@@ -872,11 +844,11 @@ public class MediaProcessingService {
           .forEach(path -> {
             try {
               Files.deleteIfExists(path);
-            } catch (IOException e) {
+            } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
               log.warn("Failed to delete: {}", path, e);
             }
           });
-    } catch (IOException e) {
+    } catch (IOException e) { // Best effort, as above.
       log.warn("Failed to walk {} for deletion", dir, e);
     }
   }

@@ -1,7 +1,7 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17); next is brick 12.
+planned (bricks 12–17): brick 12 done; next is brick 13.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -395,7 +395,7 @@ until the retry ADR.
 The same rule applies to every catch removed here: if it was doing cleanup, the
 cleanup moves to a `finally` before the catch goes.
 
-#### 12. Media: one failure, one log line — ⬜
+#### 12. Media: one failure, one log line — ✅
 
 Log hygiene; no job outcome changes. In `MediaProcessingService`, media
 `GcsStorageService` and `MediaProcessingConfig`:
@@ -424,6 +424,15 @@ Log hygiene; no job outcome changes. In `MediaProcessingService`, media
 **DoD:** `MediaJobBoundaryTest`: ffprobe fails → exactly one ERROR line, from the
 job's boundary, with the `fileId`. Works with or without ffprobe installed, so it
 runs in CI. Before: 4 lines with ffprobe installed, 2 without.
+
+**Done:** the red run showed 4 ERROR lines for a failed probe (the exit code, "FFprobe
+process failed" twice, the boundary), and the reject handler returning normally. A
+second test covers that: both job threads busy, the queue full, the listener thread
+interrupted → `consume` throws `RejectedExecutionException`, the flag is kept.
+`isAudioSilent` still carries on as "not silent" on a `NumberFormatException` too, as
+before, so no outcome changes. The normalisation catch also restores the interrupt
+flag. Not covered by a test (they need real media): the remux and transcode catches,
+`monitorFFmpegOutput`, `isAudioSilent`; checked by reading.
 
 #### 13. Media: the helper threads hand their failures to the job — ⬜
 

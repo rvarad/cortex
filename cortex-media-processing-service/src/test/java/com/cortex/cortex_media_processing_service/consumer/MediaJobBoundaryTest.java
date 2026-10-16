@@ -1,6 +1,7 @@
 package com.cortex.cortex_media_processing_service.consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -10,6 +11,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -193,6 +196,90 @@ class MediaJobBoundaryTest {
     assertThat(error.getLoggerName()).as("logged by the boundary").isEqualTo(BackgroundTask.class.getName());
     assertThat(error.getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
     assertThat(escaped.get()).as("nothing escapes onto the pool thread").isNull();
+  }
+
+  @Test
+  void aFailedProbe_isLoggedOnce_atTheJobsBoundary() throws Exception {
+    // ---- Arrange: every send works; ffprobe can't read the file ----
+    // With ffprobe installed it exits non-zero on port 9's refused connection; without it, starting
+    // it fails. Either way the probe fails, and the boundary is the only place that may say so.
+    UUID fileId = UUID.randomUUID();
+    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn("http://127.0.0.1:9/media.mp4");
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(uploadedFile(fileId)));
+    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
+
+    // ---- Act ----
+    consumer.consume(FileIngestionEventDTO.builder()
+        .fileId(fileId)
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .userId("user-1")
+        .build());
+
+    ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
+    pool.shutdown();
+    assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).as("the job finished").isTrue();
+
+    // ---- Assert ----
+    List<ILoggingEvent> errors = captured.list.stream()
+        .filter(logged -> logged.getLevel() == Level.ERROR)
+        .toList();
+
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    ILoggingEvent error = errors.get(0);
+    assertThat(error.getLoggerName()).as("logged by the boundary").isEqualTo(BackgroundTask.class.getName());
+    assertThat(error.getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
+    assertThat(escaped.get()).as("nothing escapes onto the pool thread").isNull();
+  }
+
+  @Test
+  void aJobThatCannotBeQueued_failsTheListener_soTheKafkaHandlerReportsIt() throws Exception {
+    // ---- Arrange: both job threads busy, the queue full, and the listener thread interrupted ----
+    // (as on shutdown). The reject handler then cannot wait for a free place in the queue.
+    CountDownLatch release = new CountDownLatch(1);
+    ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
+    int fillers = pool.getMaximumPoolSize() + pool.getQueue().remainingCapacity(); // before any is queued
+    for (int i = 0; i < fillers; i++) {
+      executor.execute(() -> {
+        try {
+          release.await();
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+    }
+    UUID fileId = UUID.randomUUID();
+
+    // ---- Act ----
+    Thread.currentThread().interrupt();
+    Throwable thrown;
+    try {
+      thrown = catchThrowable(() -> consumer.consume(FileIngestionEventDTO.builder()
+          .fileId(fileId)
+          .objectName("uploads/media/" + fileId + ".mp4")
+          .userId("user-1")
+          .build()));
+    } finally {
+      // Read and clear the flag, so it doesn't leak into the next test on this thread.
+      assertThat(Thread.interrupted()).as("the interrupt flag is kept").isTrue();
+      release.countDown();
+    }
+
+    // ---- Assert: the job is not dropped silently; the listener fails, with the cause ----
+    assertThat(thrown).as("the listener fails").isInstanceOf(RejectedExecutionException.class);
+    assertThat(thrown).hasRootCauseInstanceOf(InterruptedException.class);
+  }
+
+  private static FileMetadata uploadedFile(UUID fileId) {
+    return FileMetadata.builder()
+        .id(fileId)
+        .fileDisplayName("talk.mp4")
+        .bucketName("cortex-dev-bucket")
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .fileSize(1_000L)
+        .fileStatus(FileStatusEnum.UPLOADED)
+        .contentType("video/mp4")
+        .userId("user-1")
+        .build();
   }
 
   /** The logged exception may be a wrapper; the original is somewhere in its causes. */
