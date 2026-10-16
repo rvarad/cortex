@@ -1,13 +1,12 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Next is the
-planning pass for Slice 3.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
+planned (bricks 12–17); next is brick 12.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
 the broker. **Before merging to `master`:
-Done when step 0 (raise the Pub/Sub ack deadline) — not done.** Slice 3 gets its own
-planning pass once Slices 1 and 2 land.
+Done when step 0 (raise the Pub/Sub ack deadline) — not done.**
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -40,7 +39,17 @@ throw.
   through.
 - **`ChatController` and the old chat path behind it** (`ChatService`,
   `VertexAnswerGenerator`). Marked `@Deprecated`; nothing in the frontend calls them,
-  and they will be deleted rather than fixed.
+  and they will be deleted rather than fixed. Slice 3 leaves their 7 catches alone,
+  and Done when step 6 skips them.
+- **Finishing an answer after the user leaves.** Today a user who leaves mid-answer
+  stops the agent and the half answer is not saved (brick 15 keeps that). Keeping the
+  answer needs a separate stop request first: the Stop button works by closing the
+  connection, so the server can't tell Stop from a closed tab. Its own plan, and an
+  amendment to ADR-0014's SSE rule.
+- **Signed URLs and ffmpeg output in INFO lines.** Media logs the signed GCS URL (a
+  bearer token for 30 minutes) and every ffmpeg output line; ingestion logs the
+  signed upload URL. Matters once logs leave the machine; part of the observability
+  work.
 - **Normalisation in its own service class.** `MediaProcessingService` is too large;
   this is a refactor, done after this plan.
 
@@ -371,52 +380,199 @@ outbound calls".
 
 **When this slice is done:** every `catch` in `src/main` is a boundary handler,
 re-throws with the cause, or has a comment on that line saying why carrying on is
-correct.
+correct. The deprecated chat path (`ChatController`, `ChatService`,
+`VertexAnswerGenerator`) is left as it is (see Not doing).
 
-Not broken into bricks yet. Each catch needs its own look, and Slices 1–2 will
-remove some and change what others mean. Expected shape, by service and size:
-media (`MediaProcessingService` 18, `GcsStorageService` 3), where the upload-worker
-catch changes behaviour and gets a brick to itself; rag (27 across 15 files); ingestion
-(12). Also: `"..." + e` messages, and `catch (InterruptedException e)` that doesn't
-restore the interrupt flag.
+**Planning pass (2026-10-15).** 62 catches. 17 already follow the rule
+(`BackgroundTask`, `KafkaSends`, `KafkaFailures`, `SseEvents`, the gateway's, four in
+`ConversationHistory`, `OrchestrationService`, `LibraryTools`); 4 more only need the
+comment; 7 are in the deprecated chat path. The rest are below, by brick. Media first.
 
-**The upload dispatcher can hang a job forever.** Its catch in
-`startUploadDispatcher` logs nothing: it sets the interrupt flag and `break`s, so the
-dispatcher stops. Nothing drains the upload queue after that, and step 2 of
-`cleanUpWorkingDir` (`while` the queue isn't empty, sleep one second) waits forever,
-logging "Waiting for N remaining uploads…" each second. The job never finishes and
-keeps one of the two job threads. Rare today (it needs an interrupt, and nothing
-sends one), but a hang, not a failure, so no boundary ever sees it. Fix it with this
-slice's media bricks, and give the drain loop a deadline when the timeouts work
-lands.
+Decided with Varad: the deprecated path stays and is left out of the final grep; a
+chunk upload keeps today's one retry in cleanup; the transcription retry loop stays
+until the retry ADR.
 
-**A client leaving mid-answer is mistaken for bad JSON.** In `AgentService.streamRound`,
-the `catch (Exception e)` around `parser.feed(piece)` also catches the
-`ClientDisconnectedException` thrown when a segment's send fails, because segments are
-sent from inside the parser's callback. It logs "streamed answer was not the expected
-JSON" at WARN, keeps reading the model's stream to the end of the round (tokens paid
-for, nobody listening), and only stops when the final uncited segment's send fails.
-That catch must let the disconnect through.
+The same rule applies to every catch removed here: if it was doing cleanup, the
+cleanup moves to a `finally` before the catch goes.
 
-**A chunk whose send fails can leave a hole in the file.** The upload worker's catch
-also catches a failed send (brick 7): it logs "Upload failed" and marks the chunk
-`FAILED`. Cleanup tries each `FAILED` chunk once more. If the send that failed came
-after `mediaChunkRepository.save` (`MEDIA_CHUNK_READY` or `media-chunk-uploaded`), the
-second try hits `uq_media_chunk_file_chunk` and fails again, even with the broker back.
-Cleanup then only logs a WARN, and the job saves a `totalChunks` without that chunk,
-so the file completes with a hole. ADR-0014's target: the worker hands its failure to
-the job, and the job fails. The `catch` in `cleanUpWorkingDir` must let that through.
+#### 12. Media: one failure, one log line — ⬜
 
-**ffprobe's catches wrap a failed `PROBE_COMPLETE` send.** That send is inside both
-catches in `probeMediaFile`, so its failure is logged twice as "FFprobe process
-failed" before it reaches the boundary.
+Log hygiene; no job outcome changes. In `MediaProcessingService`, media
+`GcsStorageService` and `MediaProcessingConfig`:
 
-**Cleanup goes in `finally`, not `catch`.** Letting a failure propagate must not skip
-cleanup. Today `processMedia` deletes its work directory only on the success path,
-so every failed job leaves its files under `/tmp/media-processing-service-chunks`.
-That deletion moves into a `finally`. The same check applies to every catch removed
-in this slice: if it was doing cleanup, the cleanup moves to a `finally` before the
-catch goes.
+- The log-and-rethrow catches go: GCS `getPresignedUrl` and `uploadFile`, both
+  ffprobe catches (a failed `PROBE_COMPLETE` send is inside both today, so it is
+  logged twice as "FFprobe process failed"), `remuxFile`, `transcodeVideo`,
+  `transcodeAudio`. The `log.error` before a `throw` goes too: metadata not found,
+  ffmpeg's and ffprobe's exit codes. The methods declare their checked exceptions.
+- `readHead` keeps one `catch (IOException)` that re-throws it as
+  `UncheckedIOException`, no log: it runs inside a `BooleanSupplier`.
+- `isAudioSilent`: an `IOException` is a WARN and the job carries on as "not silent"
+  (a wasted transcription costs less than a lost transcript; the comment says so).
+  An `InterruptedException` restores the flag and propagates; today it is swallowed.
+- `monitorFFmpegOutput` loses its catch; its `BackgroundTask` logs it, with the
+  `fileId`.
+- The executor's reject handler restores the flag and throws
+  `RejectedExecutionException` with the cause, so the Kafka handler reports the job
+  that could not be queued, with its `fileId`. Today it is dropped with a line that
+  has no id.
+- Comments on the catches that stay: normalisation, `ClosedWatchServiceException`,
+  the three per-file deletes.
+- "Media file is corrupted": ERROR → WARN. A rejected upload is the user's input, not
+  our failure.
+
+**DoD:** `MediaJobBoundaryTest`: ffprobe fails → exactly one ERROR line, from the
+job's boundary, with the `fileId`. Works with or without ffprobe installed, so it
+runs in CI. Before: 4 lines with ffprobe installed, 2 without.
+
+#### 13. Media: the helper threads hand their failures to the job — ⬜
+
+The watcher, the upload dispatcher and the upload workers are things the job waits
+for, through cleanup. Today each logs and carries on, or stops silently, and the job
+never hears:
+
+- **A file can complete with a hole.** A failed send in the worker after
+  `mediaChunkRepository.save` marks the chunk `FAILED`. Cleanup's retry then hits
+  `uq_media_chunk_file_chunk` and fails again, cleanup logs a WARN and returns, and
+  the job saves a `totalChunks` without that chunk.
+- **A dead dispatcher hangs the job forever.** Its catch sets the interrupt flag and
+  `break`s, with no log. Cleanup's drain loop then waits forever, logging "Waiting
+  for N remaining uploads…" each second, and holds one of the two job threads.
+- **A dead watcher kills a healthy job with the wrong cause.** The watcher updates
+  the last-chunk time. Without it, after 3 minutes the stall check kills ffmpeg, and
+  the job fails with "exit code 137".
+
+Change:
+
+- `MediaProcessingContext` gets a failure slot (first one wins) and each failed
+  chunk's causes.
+- The watcher and the dispatcher start through a small wrapper: still inside
+  `BackgroundTask` for MDC, but a failure goes into the slot instead of a log line
+  (the comment says the job logs it). Their own catches go, except the
+  `ClosedWatchServiceException` one.
+- The upload worker's catch stays, commented: it marks the chunk `FAILED`, stores
+  the cause, and logs a WARN, because cleanup tries it once more. The `// Retry
+  logic` placeholder goes.
+- The job checks the slot every second, in the ffmpeg wait loop and in cleanup's
+  drain loop, and throws what it finds.
+- Cleanup: a chunk still `FAILED` after its retry is a `throw`, with the first cause
+  and the retry's as suppressed. Cleanup's outer catch-all goes. Its wait on the
+  shared upload semaphore is not touched (that is `per-job-upload-wait.md`).
+- ADR-0014 amendment: the watcher, the dispatcher and the upload workers are not
+  boundaries; their job is.
+
+| Case | Before | After |
+|---|---|---|
+| A chunk fails twice | File completes with a hole, one WARN | Job fails: one ERROR with the `fileId` and the first cause; no `totalChunks`, no `CHUNKING_COMPLETE` |
+| A chunk fails once, then succeeds | Completes, one ERROR | Completes, one WARN |
+| The dispatcher dies | Job hangs forever | Job fails within about a second, with the cause |
+| The watcher dies | ffmpeg killed after 3 min, "exit code 137" | Job fails at once, with the watcher's cause |
+
+Cost: uploads already running when the job fails (five at most) finish, and can still
+save their row and send `media-chunk-uploaded`. Brick 14 stops new ones.
+
+**Open at the start of the brick:** how to test it. ffmpeg is on the dev machine but
+not in CI. Either the upload code (dispatcher, worker, cleanup) moves to its own class
+and is tested with fake chunk files, or the test runs real ffmpeg and is skipped in CI.
+
+**DoD:** a chunk failing twice fails the job with one ERROR line carrying the first
+cause, and `updateChunkingResult` is never called; a chunk failing once still
+completes; a dispatcher that dies fails the job instead of hanging (the test has a
+time limit).
+
+#### 14. Media: cleanup in `finally` — ⬜
+
+Today `processMedia` deletes its work directory only on the success path, so every
+failed job leaves its files under `/tmp/media-processing-service-chunks`, and a job
+that fails mid-chunking leaves ffmpeg running.
+
+- A `finally` in `processMedia`, once the work directory exists: kill the ffmpeg
+  chunking process if it is still running; empty the upload queue, so the dispatcher
+  stops; join the normalisation thread; delete the whole work directory
+  (`deleteRecursively` moves here from the success path).
+- ffprobe and the volume-check ffmpeg are killed in a `finally` if still running.
+  `runNormalization` kills its process when its wait is interrupted, not only on
+  timeout.
+- Normalisation deletes its own output file in a `finally`, not only on success.
+
+Cost: a failed job waits for its normalisation, as a successful one already does,
+and holds one of the two job threads meanwhile. Deleting the folder under a running
+normalisation would break the playback file for nothing.
+
+**DoD:** a job that fails after its work directory exists leaves no directory behind,
+and no ffmpeg process. Same test question as brick 13: getting that far needs
+ffprobe to succeed on a real file.
+
+#### 15. Rag: a user who leaves stops the agent at once — ⬜
+
+`AgentService.streamRound` wraps `parser.feed(piece)` in `catch (Exception e)`.
+Segments are sent from inside the parser's callback, and `SegmentParser` wraps
+everything in its `try`, the callback included. So a user leaving mid-answer is
+caught as "streamed answer was not the expected JSON" (WARN), the model's stream is
+read to the end of the round (tokens paid for, nobody listening), and the agent stops
+only when the final uncited segment's send fails.
+
+- `SegmentParser`: the `try` covers only `readValue`; the callback is outside it. A
+  parse failure throws a new `SegmentParseException`.
+- `streamRound`: the catch narrows to `SegmentParseException`. The model's stream is
+  read through `toStream()` in try-with-resources instead of `toIterable()`, so
+  leaving the loop cancels the request to Gemini, not only stops reading it (the test
+  checks the cancel).
+- `VertexAnswerGenerator` uses the same parser; its own catch-all still catches
+  everything, so only its message changes.
+
+What the user sees does not change: a half answer is never saved
+(`ConversationService.ask`), and on return the question is marked unanswered, as
+today.
+
+**DoD:** `SegmentParserTest`: a callback that throws → the same exception comes out
+of `feed`. A test with a fake chat model: the first send fails → the model's stream
+is cancelled (`doOnCancel`), one INFO line, no WARN.
+
+#### 16. Rag: pipeline catches, one line per failure — ⬜
+
+Log hygiene; no outcome changes.
+
+- The log-and-rethrow catches go: `VisionService`, `EmbeddingService`, rag
+  `GcsStorageService` (both).
+- `TranscriptionService`: the outer wrap goes. The retry loop stays, with a comment
+  that the retry ADR decides it. The sleep's `InterruptedException` restores the
+  flag before it propagates; today the flag is lost.
+- Comments on the catches that already carry on correctly: `CitationNumberer`,
+  `ConversationHistory.arguments`, `AgentService.parse`.
+
+Before: a failed vision or embedding call is two ERROR lines (the service's, then
+the Kafka report). After: one, the report, with the whole cause chain. This makes
+Done when step 3 hold.
+
+**DoD:** `MediaChunkListenerBoundaryTest` with the real `EmbeddingService` and rag
+`GcsStorageService`, their repository and `Storage` faked to throw → one ERROR line,
+from the report. `VisionService`'s Gemini client is hard to fake (`models` is a final
+field); if a test can't reach it, its change is checked by reading, and the brick
+says so.
+
+#### 17. Ingestion: SSE to a user who left is INFO; the Kafka path reaches its boundary — ⬜
+
+- `PipelineEventsService.processNewEvent`: the `JsonProcessingException` catch goes,
+  so the Kafka handler reports it with the `fileId`. It also fixes a quiet case: a
+  `PIPELINE_COMPLETE` that fails to serialise today leaves the file committed as
+  `COMPLETED` with no event; after, the transaction rolls back.
+- `sendPreviousEvents`: the catch goes. Spring buffers sends made before the endpoint
+  returns, so a client can't leave here; the catch only hides unreadable stored
+  metadata, which becomes a 500 at the advice.
+- `SseEmitterRegistry.broadcast`: the catch stays (a user who left must not fail the
+  Kafka record) but logs INFO, not ERROR with a stack trace, and says so on the line.
+  ADR-0014's SSE rule.
+- Comments: `completeEmitters`, the after-commit GCS delete in `FilesService`,
+  `InternalJwtFilter` (common).
+- Ingestion's "File too big": ERROR → WARN, as in brick 12.
+
+Before: closing a file's page while it processes logs an ERROR with a stack trace
+for every later event. After: one INFO.
+
+**DoD:** an emitter whose send throws `IOException` → one INFO, no ERROR, and the
+next broadcast doesn't call it. `PipelineEventsListenerBoundaryTest`: an
+`ObjectMapper` that throws → reported once by the Kafka handler, with the `fileId`.
 
 ## Done when
 
@@ -432,7 +588,7 @@ catch goes.
 3. Set a wrong Groq key in rag's dev config and upload again. Rag logs one ERROR line
    per audio chunk, each with the `fileId`. No record is redelivered by Kafka. (Groq
    still sees three attempts per chunk: `TranscriptionService` has its own retry
-   loop, which Slice 3 looks at.)
+   loop, which stays until the retry ADR; brick 16.)
 4. Stop the Kafka container while a file is chunking. Media logs one ERROR line with
    the `fileId`, from the job's boundary. Expect it to take one to two minutes: the
    producer waits up to `max.block.ms` (60 s) for topic metadata, and retries a send
@@ -441,4 +597,5 @@ catch goes.
 5. Ask for another user's file id (`DELETE /api/v1/files/<id>`) through the gateway.
    The answer is 404, not 500.
 6. Grep `src/main` for `catch (`: every hit is a boundary handler, a re-throw, or has
-   a comment on its line.
+   a comment on its line. `ChatController`, `ChatService` and `VertexAnswerGenerator`
+   are skipped (deprecated; see Not doing).
