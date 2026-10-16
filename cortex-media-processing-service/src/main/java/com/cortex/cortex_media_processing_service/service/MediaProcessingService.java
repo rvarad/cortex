@@ -19,6 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,6 +30,7 @@ import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -233,8 +238,20 @@ public class MediaProcessingService {
         }));
       }
 
-      Thread.startVirtualThread(BackgroundTask.of("directory watcher", () -> startDirectoryWatcher(processContext)));
-      Thread.startVirtualThread(BackgroundTask.of("upload dispatcher", () -> startUploadDispatcher(processContext)));
+      // Tasks the job waits for (ADR-0014, 2026-10-16): a failure comes back to it through get().
+      FutureTask<Void> watcher = new FutureTask<>(() -> {
+        MDC.put("fileId", fileId.toString()); // a new thread has no MDC
+        startDirectoryWatcher(processContext);
+        return null;
+      });
+      FutureTask<Void> dispatcher = new FutureTask<>(() -> {
+        MDC.put("fileId", fileId.toString());
+        startUploadDispatcher(processContext);
+        return null;
+      });
+      Thread.startVirtualThread(watcher);
+      Thread.startVirtualThread(dispatcher);
+      List<Future<Void>> helpers = List.of(watcher, dispatcher);
 
       processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
@@ -249,7 +266,7 @@ public class MediaProcessingService {
 
       Thread.startVirtualThread(BackgroundTask.of("ffmpeg output reader", () -> monitorFFmpegOutput(ffmpegProcess)));
 
-      waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS());
+      waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS(), helpers);
 
       int exitCode = ffmpegProcess.exitValue();
       if (exitCode != 0) {
@@ -258,7 +275,7 @@ public class MediaProcessingService {
 
       log.info("FFmpeg process completed successfully");
 
-      cleanUpWorkingDir(processContext);
+      cleanUpWorkingDir(processContext, helpers);
 
       processContext.getIsRunning().set(false);
 
@@ -568,11 +585,14 @@ public class MediaProcessingService {
     }
   }
 
-  private void waitForFFmpegCompletion(Process process, AtomicLong lastChunkTimeMS) throws Exception {
+  private void waitForFFmpegCompletion(Process process, AtomicLong lastChunkTimeMS, List<Future<Void>> helpers)
+      throws Exception {
     Instant overallDeadline = Instant.now().plus(FFMPEG_PROCESSING_TIMEOUT_M, ChronoUnit.MINUTES);
     long stallTimeoutMS = 1000 * 60 * 3;
 
     while (process.isAlive()) {
+      // Before the stall check: a dead watcher stops the last-chunk time, which looks like a stall.
+      rethrowIfFailed(helpers);
 
       long now = System.currentTimeMillis();
 
@@ -601,7 +621,7 @@ public class MediaProcessingService {
     }
   }
 
-  private void startDirectoryWatcher(MediaProcessingContext processContext) {
+  private void startDirectoryWatcher(MediaProcessingContext processContext) throws Exception {
     try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
 
       Path chunksDir = processContext.getWorkDir().resolve("chunks");
@@ -615,9 +635,6 @@ public class MediaProcessingService {
         try {
           key = watchService.poll(500, TimeUnit.MILLISECONDS);
         } catch (ClosedWatchServiceException e) { // Closed means the watcher is done: stop watching.
-          break;
-        } catch (Exception e) {
-          log.error("Error watching directory", e);
           break;
         }
 
@@ -649,6 +666,8 @@ public class MediaProcessingService {
 
         boolean dirAccessible = key.reset();
         if (!dirAccessible) {
+          // Not a failure: cleanup deletes chunks/ while this loop may still run. Mid-job, cleanup's
+          // sweep still finds every chunk this missed.
           log.warn("Work directory inaccessible. Stopping watcher.");
           break;
         }
@@ -660,31 +679,23 @@ public class MediaProcessingService {
         safeEnqueue(processContext, previousAudioChunk);
 
       log.info("Watcher stopped. Final chunks queued for upload");
-    } catch (Exception e) {
-      log.error("Error watching directory", e);
     }
   }
 
-  private void startUploadDispatcher(MediaProcessingContext processContext) {
+  private void startUploadDispatcher(MediaProcessingContext processContext) throws InterruptedException {
     while (processContext.getIsRunning().get() || !processContext.getUploadQueue().isEmpty()) {
-      try {
-        Path chunkPath = processContext.getUploadQueue().poll(1, TimeUnit.SECONDS);
-        if (chunkPath == null)
-          continue;
+      Path chunkPath = processContext.getUploadQueue().poll(1, TimeUnit.SECONDS);
+      if (chunkPath == null)
+        continue;
 
-        uploadSlots.acquire();
+      uploadSlots.acquire();
 
-        log.info("Uploading chunk: {}", chunkPath.getFileName());
+      log.info("Uploading chunk: {}", chunkPath.getFileName());
 
-        Thread.startVirtualThread(BackgroundTask.of("upload worker", () -> {
-          processContext.getChunkUploadStatusMap().put(chunkPath.toString(),
-              com.cortex.cortex_media_processing_service.service.processing.UploadStatus.IN_PROGRESS);
-          uploadWorker(processContext, chunkPath);
-        }));
-      } catch (Exception e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
+      Thread.startVirtualThread(BackgroundTask.of("upload worker", () -> {
+        processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.IN_PROGRESS);
+        uploadWorker(processContext, chunkPath);
+      }));
     }
   }
 
@@ -750,10 +761,14 @@ public class MediaProcessingService {
       }
 
       Files.deleteIfExists(chunkPath);
-    } catch (Exception e) {
-      log.error("Upload failed for {}", chunkPath, e);
+    } catch (Exception e) { // Carrying on: cleanup tries the chunk once more, and fails the job if that fails too.
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      log.warn("Upload failed for {}", chunkPath, e);
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.FAILED);
-      // Retry logic
+      processContext.getChunkUploadFailures().computeIfAbsent(chunkPath.toString(), key -> new CopyOnWriteArrayList<>())
+          .add(e);
     } finally {
       uploadSlots.release();
     }
@@ -771,68 +786,96 @@ public class MediaProcessingService {
     return workDir;
   }
 
-  private void cleanUpWorkingDir(MediaProcessingContext processContext) {
+  private void cleanUpWorkingDir(MediaProcessingContext processContext, List<Future<Void>> helpers) throws Exception {
     Path chunksDir = processContext.getWorkDir().resolve("chunks");
     log.info("Starting cleanup for chunks directory: {}", chunksDir);
 
-    try {
-      // 1. Sweep for any remaining chunks that weren't uploaded
-      try (var files = Files.list(chunksDir)) {
-        files.filter(path -> {
-          String name = path.getFileName().toString();
-          return name.endsWith(".mp4") || name.endsWith(".wav");
-        })
-            .filter(path -> {
-              String key = path.toString();
-              UploadStatus status = processContext.getChunkUploadStatusMap().get(key);
-              return status == null || status == UploadStatus.PENDING || status == UploadStatus.FAILED;
-            })
-            .forEach(path -> {
-              log.info("Found remaining chunk during cleanup: {}", path.getFileName());
-              safeEnqueue(processContext, path);
-            });
+    // 1. Sweep for any remaining chunks that weren't uploaded. A FAILED one gets its one retry here.
+    try (var files = Files.list(chunksDir)) {
+      files.filter(path -> {
+        String name = path.getFileName().toString();
+        return name.endsWith(".mp4") || name.endsWith(".wav");
+      })
+          .filter(path -> {
+            String key = path.toString();
+            UploadStatus status = processContext.getChunkUploadStatusMap().get(key);
+            return status == null || status == UploadStatus.PENDING || status == UploadStatus.FAILED;
+          })
+          .forEach(path -> {
+            log.info("Found remaining chunk during cleanup: {}", path.getFileName());
+            safeEnqueue(processContext, path);
+          });
+    }
+
+    // 2. Wait for upload queue to drain. A dead dispatcher would never drain it: check for that.
+    while (!processContext.getUploadQueue().isEmpty()) {
+      rethrowIfFailed(helpers);
+      log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
+      log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
+      Thread.sleep(1000);
+    }
+
+    // 3. Wait for all in-progress uploads to complete (all semaphore slots
+    // released)
+    uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
+    uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+
+    // 4. Verify all uploads completed successfully. A chunk still FAILED has had its retry: the
+    // file would complete without it, so the job fails instead.
+    rethrowIfFailed(helpers);
+    List<String> failedChunks = processContext.getChunkUploadStatusMap().entrySet().stream()
+        .filter(entry -> entry.getValue() == UploadStatus.FAILED)
+        .map(Map.Entry::getKey)
+        .sorted()
+        .toList();
+
+    if (!failedChunks.isEmpty()) {
+      // The first failure is the cause: a retry's is often only its consequence (the row already
+      // saved, so the retry hits the unique key).
+      List<Exception> causes = failedChunks.stream()
+          .flatMap(chunk -> processContext.getChunkUploadFailures().getOrDefault(chunk, List.of()).stream())
+          .toList();
+      IllegalStateException failure = new IllegalStateException(
+          failedChunks.size() + " chunk(s) failed to upload, after a retry: " + failedChunks,
+          causes.isEmpty() ? null : causes.get(0));
+      causes.stream().skip(1).forEach(failure::addSuppressed);
+      throw failure;
+    }
+
+    // 5. Delete the chunks directory recursively (NOT the parent workDir — the
+    // normalized playback file lives there and may still be in use by the
+    // normalization thread; the parent is removed by the wait-for-both wiring).
+    try (var paths = Files.walk(chunksDir)) {
+      paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
+          .forEach(path -> {
+            try {
+              Files.deleteIfExists(path);
+            } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
+              log.warn("Failed to delete: {}", path, e);
+            }
+          });
+    }
+
+    log.info("Successfully cleaned up chunks directory: {}", chunksDir);
+  }
+
+  /** get() on a finished helper throws its failure, if it had one. */
+  private static void rethrowIfFailed(List<Future<Void>> helpers) throws Exception {
+    for (Future<Void> helper : helpers) {
+      if (helper.isDone()) {
+        try {
+          helper.get();
+        } catch (ExecutionException e) {
+          // Unwrapped, as in KafkaSends: ExecutionException only says "the task failed". The cause is the failure.
+          if (e.getCause() instanceof Exception cause) {
+            throw cause;
+          }
+          if (e.getCause() instanceof Error error) {
+            throw error;
+          }
+          throw e;
+        }
       }
-
-      // 2. Wait for upload queue to drain
-      while (!processContext.getUploadQueue().isEmpty()) {
-        log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
-        log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
-        Thread.sleep(1000);
-      }
-
-      // 3. Wait for all in-progress uploads to complete (all semaphore slots
-      // released)
-      uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
-      uploadSlots.release(MAX_CONCURRENT_UPLOADS);
-
-      // 4. Verify all uploads completed successfully
-      long failedCount = processContext.getChunkUploadStatusMap().values().stream()
-          .filter(status -> status == UploadStatus.FAILED)
-          .count();
-
-      if (failedCount > 0) {
-        log.warn("{} chunks failed to upload. Skipping directory deletion.", failedCount);
-        return;
-      }
-
-      // 5. Delete the chunks directory recursively (NOT the parent workDir — the
-      // normalized playback file lives there and may still be in use by the
-      // normalization thread; the parent is removed by the wait-for-both wiring).
-      try (var paths = Files.walk(chunksDir)) {
-        paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
-            .forEach(path -> {
-              try {
-                Files.deleteIfExists(path);
-              } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
-                log.warn("Failed to delete: {}", path, e);
-              }
-            });
-      }
-
-      log.info("Successfully cleaned up chunks directory: {}", chunksDir);
-
-    } catch (Exception e) {
-      log.error("Error during cleanup of working directory: {}", processContext.getWorkDir(), e);
     }
   }
 

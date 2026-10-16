@@ -1,6 +1,6 @@
 # 0014. Exceptions propagate to a named boundary, and only the boundary handles them
 
-**Status:** Amended 2026-10-12 (accepted 2026-10-05)
+**Status:** Amended 2026-10-16 (accepted 2026-10-05)
 **Verified by:** Read of every `src/main` file on `reliability-hardening`, 2026-10-04.
 Counted 63 `catch` blocks, 37 `new RuntimeException(...)` wraps, and 20
 `kafkaTemplate.send(...)` calls, none of whose results is looked at. Nothing has been
@@ -239,3 +239,21 @@ New invariants:
   backoff, no retry rules, no dead-letter topics. Only how a failed record is
   reported.
 - Every service's Kafka error handler reports through `KafkaFailures`.
+
+### 2026-10-16 — The watcher and the upload dispatcher are waited for
+
+The 2026-10-05 amendment lists the watcher and the upload dispatcher as fire-and-forget.
+They are not: the job waits for them, through cleanup, before it saves `totalChunks`.
+As boundaries, each logged its own failure and the job never heard: a dead dispatcher
+left cleanup waiting forever, and a dead watcher let the stall check kill a healthy
+ffmpeg, so the job failed blaming ffmpeg.
+
+They move to the first list. Each runs as a `FutureTask`, and the job calls `get()` on
+a finished one while it waits (the ffmpeg wait loop, cleanup's drain loop, before
+cleanup's verify), so a failure comes back to the job and is logged once, at its
+boundary.
+
+The upload workers stay fire-and-forget, but a worker's failure no longer ends there:
+it is recorded on its chunk and logged as a WARN, and cleanup tries the chunk once
+more. A chunk that fails again fails the job, with the first failure as the cause.
+Before, a chunk that failed twice left a hole in a file that then completed.

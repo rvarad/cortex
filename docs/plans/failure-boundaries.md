@@ -1,7 +1,7 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17): brick 12 done; next is brick 13.
+planned (bricks 12–17): bricks 12–13 done; next is brick 14.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -434,7 +434,7 @@ before, so no outcome changes. The normalisation catch also restores the interru
 flag. Not covered by a test (they need real media): the remux and transcode catches,
 `monitorFFmpegOutput`, `isAudioSilent`; checked by reading.
 
-#### 13. Media: the helper threads hand their failures to the job — ⬜
+#### 13. Media: the helper threads hand their failures to the job — ✅
 
 The watcher, the upload dispatcher and the upload workers are things the job waits
 for, through cleanup. Today each logs and carries on, or stops silently, and the job
@@ -453,41 +453,68 @@ never hears:
 
 Change:
 
-- `MediaProcessingContext` gets a failure slot (first one wins) and each failed
-  chunk's causes.
-- The watcher and the dispatcher start through a small wrapper: still inside
-  `BackgroundTask` for MDC, but a failure goes into the slot instead of a log line
-  (the comment says the job logs it). Their own catches go, except the
+- The watcher and the dispatcher run as `FutureTask`s, not inside `BackgroundTask`:
+  the job waits for them, so ADR-0014 says they must not be wrapped. Each puts the
+  `fileId` in its own MDC. Their own catches go, except the
   `ClosedWatchServiceException` one.
-- The upload worker's catch stays, commented: it marks the chunk `FAILED`, stores
-  the cause, and logs a WARN, because cleanup tries it once more. The `// Retry
-  logic` placeholder goes.
-- The job checks the slot every second, in the ffmpeg wait loop and in cleanup's
-  drain loop, and throws what it finds.
+- The job calls `get()` on a finished one every second, in the ffmpeg wait loop and
+  in cleanup's drain loop, and once before cleanup's verify; `get()` throws its
+  failure into the job.
+- The upload worker's catch stays, commented: it marks the chunk `FAILED`, records
+  the cause in `MediaProcessingContext`, and logs a WARN, because cleanup tries it once
+  more. The `// Retry logic` placeholder goes.
 - Cleanup: a chunk still `FAILED` after its retry is a `throw`, with the first cause
   and the retry's as suppressed. Cleanup's outer catch-all goes. Its wait on the
   shared upload semaphore is not touched (that is `per-job-upload-wait.md`).
-- ADR-0014 amendment: the watcher, the dispatcher and the upload workers are not
-  boundaries; their job is.
+- ADR-0014 amendment: the watcher and the dispatcher move to the waited-for list.
 
 | Case | Before | After |
 |---|---|---|
 | A chunk fails twice | File completes with a hole, one WARN | Job fails: one ERROR with the `fileId` and the first cause; no `totalChunks`, no `CHUNKING_COMPLETE` |
 | A chunk fails once, then succeeds | Completes, one ERROR | Completes, one WARN |
 | The dispatcher dies | Job hangs forever | Job fails within about a second, with the cause |
-| The watcher dies | ffmpeg killed after 3 min, "exit code 137" | Job fails at once, with the watcher's cause |
+| The watcher dies | Its own ERROR line; if ffmpeg still runs 3 min after the last chunk the watcher saw, ffmpeg is killed and the job fails a second time, blaming ffmpeg's exit code | Job fails at once: one line, with the watcher's cause |
+
+The 3 minutes are the stall check in `waitForFFmpegCompletion` (`stallTimeoutMS`); only
+the watcher moves the last-chunk time while ffmpeg runs. A short file finishes first,
+and cleanup's sweep uploads what the watcher missed.
 
 Cost: uploads already running when the job fails (five at most) finish, and can still
 save their row and send `media-chunk-uploaded`. Brick 14 stops new ones.
 
-**Open at the start of the brick:** how to test it. ffmpeg is on the dev machine but
-not in CI. Either the upload code (dispatcher, worker, cleanup) moves to its own class
-and is tested with fake chunk files, or the test runs real ffmpeg and is skipped in CI.
+**Decided at the start of the brick:** test through the whole job with real ffmpeg,
+skipped where ffmpeg is missing (as in CI), not by moving the upload code into its own
+class first. Moving it stays an option with the split of `MediaProcessingService`.
 
 **DoD:** a chunk failing twice fails the job with one ERROR line carrying the first
 cause, and `updateChunkingResult` is never called; a chunk failing once still
 completes; a dispatcher that dies fails the job instead of hanging (the test has a
 time limit).
+
+**Done:** `MediaJobUploadFailuresTest` runs the real job, ffprobe and ffmpeg included,
+on a 130 s video it makes with ffmpeg (three 60 s chunk pairs), with GCS, Kafka and the
+repositories faked. Two cases. Chunk 1's `media-chunk-uploaded` send fails after its
+row is saved, and the retry's save hits the unique key: before, two ERROR lines "Upload
+failed" and no job failure; after, two WARNs and one ERROR from the job's boundary,
+cause `KafkaException`, the duplicate key suppressed, no `updateChunkingResult`, no
+`CHUNKING_COMPLETE`. A GCS failure on one chunk's first upload: before, one ERROR line;
+after, one WARN, and the file completes with all three chunks.
+
+The dead dispatcher and the dead watcher are not tested: without a test hook in
+`src/main` (Decisions) a test can't make them fail. Checked by reading: both are
+`FutureTask`s, and the job calls `get()` on a finished one in the ffmpeg wait loop, in
+cleanup's drain loop and before cleanup's verify, unwrapping `ExecutionException` as
+`KafkaSends` does, so the job's line shows the helper's own exception. A helper that
+fails after that last check is not reported: in practice only the watcher's
+`WatchService.close()`, once every chunk is uploaded. The job has its result by then,
+and failing it would stick a good file. The watcher's
+"directory inaccessible" stop stays a WARN, not a failure: it also happens at a normal
+end, when cleanup deletes `chunks/` while the watcher still runs. ADR-0014 amended
+(2026-10-16).
+
+First written with a failure slot in the context and a wrapper around
+`BackgroundTask`; rewritten to `FutureTask` at review, because the wrapper caught
+everything and left `BackgroundTask`'s logging dead.
 
 #### 14. Media: cleanup in `finally` — ⬜
 
