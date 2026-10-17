@@ -1,7 +1,7 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17): bricks 12–14 done; next is brick 15.
+planned (bricks 12–17): bricks 12–15 done; next is brick 16.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -560,7 +560,7 @@ job's own failure. Gap left: the one chunk the dispatcher may hold while it wait
 a permit can start after the directory is gone; it fails with a WARN and sends
 nothing.
 
-#### 15. Rag: a user who leaves stops the agent at once — ⬜
+#### 15. Rag: a user who leaves stops the agent at once — ✅
 
 `AgentService.streamRound` wraps `parser.feed(piece)` in `catch (Exception e)`.
 Segments are sent from inside the parser's callback, and `SegmentParser` wraps
@@ -585,6 +585,18 @@ today.
 **DoD:** `SegmentParserTest`: a callback that throws → the same exception comes out
 of `feed`. A test with a fake chat model: the first send fails → the model's stream
 is cancelled (`doOnCancel`), one INFO line, no WARN.
+
+**Done:** `AgentServiceStreamTest` gives the real `AgentService` a fake chat model whose
+stream never ends by itself, like a model still writing, and a send that throws on the
+first segment. Before: the agent took the failed send for bad JSON (WARN), kept
+reading, and the test timed out after 10 s. After: the send's own exception comes out
+of `answerStream` at once, and the stream is cancelled. The INFO line is
+`SseEvents.answering`'s, not under test here: the test's send stands for the client
+leaving with its own exception, because `ClientDisconnectedException` is private to
+the controller package. Which proves the point: any failure in the send, not only a
+disconnect, now ends the round instead of being taken for bad JSON.
+`SegmentParserTest`: a callback that throws comes out as the same exception; a
+segment that is not JSON is a `SegmentParseException`.
 
 #### 16. Rag: pipeline catches, one line per failure — ⬜
 

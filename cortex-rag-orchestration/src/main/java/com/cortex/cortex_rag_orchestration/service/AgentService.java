@@ -3,6 +3,7 @@ package com.cortex.cortex_rag_orchestration.service;
 import com.cortex.cortex_common.dto.AgentAnswerDTO;
 import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.cortex.cortex_common.dto.SourceRefDTO;
+import com.cortex.cortex_rag_orchestration.util.SegmentParseException;
 import com.cortex.cortex_rag_orchestration.util.SegmentParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,6 +19,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
@@ -473,39 +475,43 @@ public class AgentService {
     StringBuilder raw = new StringBuilder();
     boolean parseFailed = false;
 
-    for (ChatResponse response : chatModel.stream(prompt).toIterable()) {
+    // A Stream, not toIterable(): closing it cancels the request. So when a send fails because the
+    // client left, the exception leaves this loop and stops the model, not only our reading of it.
+    try (Stream<ChatResponse> responses = chatModel.stream(prompt).toStream()) {
+      for (ChatResponse response : (Iterable<ChatResponse>) responses::iterator) {
 
-      if (response.getResult() == null) {
-        continue;
-      }
+        if (response.getResult() == null) {
+          continue;
+        }
 
-      if (response.hasToolCalls()) {
-        // Gemini sends a function call as one complete chunk, never in fragments (§11
-        // V4).
-        toolCall = response;
-        continue;
-      }
+        if (response.hasToolCalls()) {
+          // Gemini sends a function call as one complete chunk, never in fragments (§11
+          // V4).
+          toolCall = response;
+          continue;
+        }
 
-      String piece = response.getResult().getOutput().getText();
+        String piece = response.getResult().getOutput().getText();
 
-      if (piece == null || piece.isEmpty()) {
-        continue;
-      }
+        if (piece == null || piece.isEmpty()) {
+          continue;
+        }
 
-      raw.append(piece);
+        raw.append(piece);
 
-      if (parseFailed) {
-        continue;
-      }
+        if (parseFailed) {
+          continue;
+        }
 
-      try {
-        parser.feed(piece);
-      } catch (Exception e) {
-        // Degrade rather than drop the answer: stop parsing, keep collecting, and hand
-        // over
-        // whatever arrived as one uncited segment below.
-        log.warn("[agent] streamed answer was not the expected JSON; sending it uncited", e);
-        parseFailed = true;
+        try {
+          parser.feed(piece);
+        } catch (SegmentParseException e) {
+          // Degrade rather than drop the answer: stop parsing, keep collecting, and hand
+          // over
+          // whatever arrived as one uncited segment below.
+          log.warn("[agent] streamed answer was not the expected JSON; sending it uncited", e);
+          parseFailed = true;
+        }
       }
     }
 
