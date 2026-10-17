@@ -1,7 +1,7 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17): bricks 12–15 done; next is brick 16.
+planned (bricks 12–17): bricks 12–16 done; next is brick 17.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -598,15 +598,18 @@ disconnect, now ends the round instead of being taken for bad JSON.
 `SegmentParserTest`: a callback that throws comes out as the same exception; a
 segment that is not JSON is a `SegmentParseException`.
 
-#### 16. Rag: pipeline catches, one line per failure — ⬜
+#### 16. Rag: pipeline catches, one line per failure — ✅
 
 Log hygiene; no outcome changes.
 
 - The log-and-rethrow catches go: `VisionService`, `EmbeddingService`, rag
   `GcsStorageService` (both).
-- `TranscriptionService`: the outer wrap goes. The retry loop stays, with a comment
-  that the retry ADR decides it. The sleep's `InterruptedException` restores the
-  flag before it propagates; today the flag is lost.
+- `TranscriptionService`: the outer catch stays (corrected at the start of the
+  brick): it already re-throws with the cause and logs nothing, and `transcribe` runs
+  inside a `CompletableFuture` `Supplier`, which can't throw a checked exception. The
+  retry loop stays, with a comment that the retry ADR decides it. A new
+  `catch (InterruptedException)` restores the flag before it re-throws; before, the
+  outer catch lost it.
 - Comments on the catches that already carry on correctly: `CitationNumberer`,
   `ConversationHistory.arguments`, `AgentService.parse`.
 
@@ -619,6 +622,16 @@ Done when step 3 hold.
 from the report. `VisionService`'s Gemini client is hard to fake (`models` is a final
 field); if a test can't reach it, its change is checked by reading, and the brick
 says so.
+
+**Done**, with plain unit tests instead (`PipelineServicesFailureTest`):
+`MediaChunkListenerBoundaryTest` already proves the Kafka boundary logs once; these
+prove the services below it add nothing. A failed embedding and a failed GCS read come
+out as the same exception, with no ERROR line; a missing object throws with its name,
+no log line; a transcription interrupted between retries keeps the interrupt flag.
+Before: the first three were wrapped and logged an ERROR line each, and the flag was
+lost. `VisionService` checked by reading. The `ConversationHistory.arguments` comment
+says what replay does with unreadable arguments: they are sent back as
+`{"raw": ...}`, not skipped.
 
 #### 17. Ingestion: SSE to a user who left is INFO; the Kafka path reaches its boundary — ⬜
 

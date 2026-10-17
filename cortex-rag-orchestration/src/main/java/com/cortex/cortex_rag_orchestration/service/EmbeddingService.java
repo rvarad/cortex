@@ -29,28 +29,23 @@ public class EmbeddingService {
 
   public void generateAndSaveEmbedding(String visualSummary, String transcript, UUID chunkId, int chunkIndex,
       String languageCode) {
-    try {
-      log.info("Generating embedding for chunkId: {}, chunkIndex: {}", chunkId, chunkIndex);
+    log.info("Generating embedding for chunkId: {}, chunkIndex: {}", chunkId, chunkIndex);
 
-      String combinedText = String.format("[VISUAL]: %s\n[TRANSCRIPT]: %s\n", visualSummary, transcript);
+    String combinedText = String.format("[VISUAL]: %s\n[TRANSCRIPT]: %s\n", visualSummary, transcript);
 
-      float[] vector = embeddingModel.embed(combinedText);
+    float[] vector = embeddingModel.embed(combinedText);
 
-      MediaChunk chunk = mediaChunkRepository.findById(chunkId)
-          .orElseThrow(() -> new RuntimeException("MediaChunk not found: " + chunkId));
+    MediaChunk chunk = mediaChunkRepository.findById(chunkId)
+        .orElseThrow(() -> new RuntimeException("MediaChunk not found: " + chunkId));
 
-      chunk.setVisualSummary(visualSummary);
-      chunk.setTranscript(transcript);
-      chunk.setLanguageCode(languageCode);
-      chunk.setEmbedding(vector);
-      chunk.setStatus(MediaChunk.Status.COMPLETED);
+    chunk.setVisualSummary(visualSummary);
+    chunk.setTranscript(transcript);
+    chunk.setLanguageCode(languageCode);
+    chunk.setEmbedding(vector);
+    chunk.setStatus(MediaChunk.Status.COMPLETED);
 
-      mediaChunkRepository.save(chunk);
+    mediaChunkRepository.save(chunk);
 
-      log.info("Successfully updated MediaChunk with embeddings for chunk: {}, chunkIndex: {}", chunkId, chunkIndex);
-    } catch (Exception e) {
-      log.error("Failed to update MediaChunk for chunk: {}, chunkIndex: {}", chunkId, chunkIndex, e);
-      throw new RuntimeException("Failed to update MediaChunk for chunk: " + chunkId, e);
-    }
+    log.info("Successfully updated MediaChunk with embeddings for chunk: {}, chunkIndex: {}", chunkId, chunkIndex);
   }
 }
