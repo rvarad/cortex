@@ -1,7 +1,7 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17): bricks 12–13 done; next is brick 14.
+planned (bricks 12–17): bricks 12–14 done; next is brick 15.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -516,20 +516,20 @@ First written with a failure slot in the context and a wrapper around
 `BackgroundTask`; rewritten to `FutureTask` at review, because the wrapper caught
 everything and left `BackgroundTask`'s logging dead.
 
-#### 14. Media: cleanup in `finally` — ⬜
+#### 14. Media: cleanup in `finally` — ✅
 
 Today `processMedia` deletes its work directory only on the success path, so every
 failed job leaves its files under `/tmp/media-processing-service-chunks`, and a job
 that fails mid-chunking leaves ffmpeg running.
 
-- A `finally` in `processMedia`, once the work directory exists: kill the ffmpeg
-  chunking process if it is still running; empty the upload queue, so the dispatcher
-  stops; join the normalisation thread; delete the whole work directory
-  (`deleteRecursively` moves here from the success path).
+- A `finally` in `processMedia`, once the work directory exists, on success and on
+  failure: kill the ffmpeg chunking process if it is still running; empty the upload
+  queue and stop the dispatcher; wait for the uploads already running; join the
+  normalisation thread; delete the whole work directory (`deleteRecursively` moves
+  here from the success path).
 - ffprobe and the volume-check ffmpeg are killed in a `finally` if still running.
   `runNormalization` kills its process when its wait is interrupted, not only on
   timeout.
-- Normalisation deletes its own output file in a `finally`, not only on success.
 
 Cost: a failed job waits for its normalisation, as a successful one already does,
 and holds one of the two job threads meanwhile. Deleting the folder under a running
@@ -538,6 +538,27 @@ normalisation would break the playback file for nothing.
 **DoD:** a job that fails after its work directory exists leaves no directory behind,
 and no ffmpeg process. Same test question as brick 13: getting that far needs
 ffprobe to succeed on a real file.
+
+**Decided at the start of the brick:** one file is processed at a time while this is
+in development, so the wait for running uploads reuses cleanup's wait on the shared
+semaphore, with a `shortcut:` comment pointing to `per-job-upload-wait.md`. No check
+to stop a failed job's last uploads reaching rag: every chunk uploaded before the
+failure has reached rag already, so that needs a `FAILED` state rag respects (Not
+doing).
+
+**Done:** `MediaJobUploadFailuresTest` checks the work directory after both of its
+jobs. Before: the failed job's directory stayed (the test's `tearDown` deleted it);
+after: gone, as after the successful job. Killing the chunking ffmpeg, ffprobe and the
+normalisation process is checked by reading: a job fails while ffmpeg runs only when
+the watcher or the dispatcher dies, which a test can't cause (brick 13).
+
+ffprobe now waits for its own exit before the output is read, so a failed ffprobe no
+longer runs the volume check first. Normalisation doesn't delete its own output: the
+job's `finally` deletes the whole directory after joining it. The `join` in the
+`finally` restores the interrupt flag and carries on, so a throw there can't hide the
+job's own failure. Gap left: the one chunk the dispatcher may hold while it waits for
+a permit can start after the directory is gone; it fails with a WARN and sends
+nothing.
 
 #### 15. Rag: a user who leaves stops the agent at once — ⬜
 

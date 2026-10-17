@@ -164,8 +164,8 @@ class MediaJobUploadFailuresTest {
     cortexLogger.detachAppender(captured);
     executor.shutdown();
     MDC.clear();
-    // A failed job leaves its work directory behind until brick 14.
-    Path workDir = Paths.get("/tmp/media-processing-service-chunks", objectName);
+    // Only if a test failed: the job deletes its own work directory.
+    Path workDir = workDir();
     if (Files.exists(workDir)) {
       try (Stream<Path> paths = Files.walk(workDir)) {
         paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
@@ -209,6 +209,9 @@ class MediaJobUploadFailuresTest {
         anyBoolean(), any());
     assertThat(pipelineEventsSent()).as("pipeline events sent")
         .doesNotContain(PipelineEventEnum.CHUNKING_COMPLETE);
+
+    // ---- and a failed job cleans up after itself, as a successful one does ----
+    assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
   @Test
@@ -233,6 +236,12 @@ class MediaJobUploadFailuresTest {
         .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_001.wav"));
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
         eq(true), eq(true), eq("h264"));
+    assertThat(workDir()).as("the work directory").doesNotExist();
+  }
+
+  /** Where the job keeps its chunks and playback file while it runs. */
+  private Path workDir() {
+    return Paths.get("/tmp/media-processing-service-chunks", objectName);
   }
 
   private void runTheJob() throws Exception {

@@ -107,6 +107,8 @@ public class MediaProcessingService {
     log.info("Beginning chunking for file: {}", objectName);
 
     MediaProcessingContext ctx = null;
+    Process ffmpegProcess = null;
+    Thread normalisationThread = null;
 
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
@@ -184,8 +186,6 @@ public class MediaProcessingService {
       String videoPattern = workDir.resolve("chunks").resolve("video_chunk_%03d.mp4").toString();
       String audioPattern = workDir.resolve("chunks").resolve("audio_chunk_%03d.wav").toString();
 
-      Thread normalisationThread = null;
-
       if (plan.equals(NormalisationEnum.PASSTHROUGH)) {
         fileMetadataRepository.updatePlaybackReady(fileId, objectName);
       } else {
@@ -261,14 +261,15 @@ public class MediaProcessingService {
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
       sendPipelineEvent(fileId.toString(), pipelineEventDTO);
 
-      Process ffmpegProcess = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
+      Process chunking = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
+      ffmpegProcess = chunking;
 
-      Thread.startVirtualThread(BackgroundTask.of("ffmpeg output reader", () -> monitorFFmpegOutput(ffmpegProcess)));
+      Thread.startVirtualThread(BackgroundTask.of("ffmpeg output reader", () -> monitorFFmpegOutput(chunking)));
 
-      waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS(), helpers);
+      waitForFFmpegCompletion(chunking, processContext.getLastChunkTimeMS(), helpers);
 
-      int exitCode = ffmpegProcess.exitValue();
+      int exitCode = chunking.exitValue();
       if (exitCode != 0) {
         throw new Exception("FFmpeg process failed with exit code: " + exitCode);
       }
@@ -295,21 +296,30 @@ public class MediaProcessingService {
               .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
               .build());
 
-      // Hold the Kafka message open until normalization also finishes
-      // (retry-correctness).
-      if (normalisationThread != null)
-        normalisationThread.join();
-
-      // Recursive (not deleteIfExists, which throws on a non-empty dir): on a
-      // normalization failure a partial normalized.* file can be left behind, and
-      // we must not let cleanup turn a best-effort failure into a pipeline failure.
-      deleteRecursively(workDir);
-
-      log.info("Media processing completed and cleaned up.");
+      log.info("Media processing completed.");
 
     } finally {
+      // On success and on failure alike: a failed job leaves no process, upload or file behind.
       if (ctx != null) {
+        if (ffmpegProcess != null) {
+          ffmpegProcess.destroyForcibly(); // a no-op once it has exited
+        }
+        ctx.getUploadQueue().clear();
         ctx.getIsRunning().set(false);
+        // shortcut: waits for every job's uploads; correct while one file is processed at a time.
+        // A per-job count replaces it (per-job-upload-wait.md).
+        uploadSlots.acquireUninterruptibly(MAX_CONCURRENT_UPLOADS);
+        uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+        if (normalisationThread != null) {
+          try {
+            normalisationThread.join(); // it writes into the work directory
+          } catch (InterruptedException e) { // Carry on: a throw here would hide the job's own failure.
+            Thread.currentThread().interrupt();
+          }
+        }
+        // Recursive (not deleteIfExists, which throws on a non-empty dir): a failed
+        // normalisation can leave a partial normalized.* file.
+        deleteRecursively(ctx.getWorkDir());
       }
     }
   }
@@ -351,8 +361,10 @@ public class MediaProcessingService {
             maxVolume = Double.parseDouble(matcher.group(1));
           }
         }
+        process.waitFor();
+      } finally {
+        process.destroyForcibly(); // a no-op once it has exited
       }
-      process.waitFor();
 
       if (maxVolume == null)
         return false;
@@ -406,6 +418,17 @@ public class MediaProcessingService {
         streamUrl);
 
     Process process = processBuilder.start();
+    JsonNode root;
+    int exitCode;
+    try {
+      root = objectMapper.readTree(process.getInputStream());
+      exitCode = process.waitFor();
+    } finally {
+      process.destroyForcibly(); // a no-op once it has exited
+    }
+    if (exitCode != 0) {
+      throw new Exception("FFprobe process failed with exit code: " + exitCode);
+    }
 
     boolean video = false;
     boolean audio = false;
@@ -414,8 +437,6 @@ public class MediaProcessingService {
     JsonNode realVideoStream = null;
 
     double duration_s = 0.0;
-
-    JsonNode root = objectMapper.readTree(process.getInputStream());
 
     duration_s = root.path("format").path("duration").asDouble(0.0);
 
@@ -435,11 +456,6 @@ public class MediaProcessingService {
     video = realVideoStream != null;
 
     String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
-
-    int exitCode = process.waitFor();
-    if (exitCode != 0) {
-      throw new Exception("FFprobe process failed with exit code: " + exitCode);
-    }
 
     log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
 
@@ -558,9 +574,13 @@ public class MediaProcessingService {
 
     Thread.startVirtualThread(BackgroundTask.of("normalisation output reader", () -> monitorFFmpegOutput(process)));
 
-    boolean finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
+    boolean finished;
+    try {
+      finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
+    } finally {
+      process.destroyForcibly(); // a no-op once it has exited; kills it on a timeout or an interrupt
+    }
     if (!finished) {
-      process.destroyForcibly();
       throw new Exception(
           "Normalization (" + label + ") exceeded the timeout of " + FFMPEG_PROCESSING_TIMEOUT_M + " minutes");
     }
@@ -844,7 +864,7 @@ public class MediaProcessingService {
 
     // 5. Delete the chunks directory recursively (NOT the parent workDir — the
     // normalized playback file lives there and may still be in use by the
-    // normalization thread; the parent is removed by the wait-for-both wiring).
+    // normalization thread; the job's finally removes the parent after joining it).
     try (var paths = Files.walk(chunksDir)) {
       paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
           .forEach(path -> {
