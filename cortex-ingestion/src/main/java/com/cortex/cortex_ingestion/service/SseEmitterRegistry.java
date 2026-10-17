@@ -48,8 +48,8 @@ public class SseEmitterRegistry {
     activeEmitters.forEach(emitter -> {
       try {
         emitter.send(SseEmitter.event().name(event.getEventType().name()).data(event));
-      } catch (Exception e) {
-        log.error("Failed to send event to emitter for fileId {}.", event.getFileId(), e);
+      } catch (Exception e) { // The page was closed: normal, and it must not fail the Kafka record.
+        log.info("Client left; stopped sending events for fileId {}", event.getFileId());
         removeConnection(event.getFileId(), emitter);
       }
     });
@@ -63,7 +63,7 @@ public class SseEmitterRegistry {
     activeEmitters.forEach(emitter -> {
       try {
         emitter.complete();
-      } catch (Exception e) {
+      } catch (Exception e) { // Carry on: one stream failing to close must not leave the others open.
         log.error("Failed to complete emitter for fileId {}.", fileId, e);
       }
     });

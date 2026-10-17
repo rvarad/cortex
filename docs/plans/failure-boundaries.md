@@ -1,7 +1,7 @@
 # Failure boundaries
 
-**Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3
-planned (bricks 12–17): bricks 12–16 done; next is brick 17.
+**Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
+(bricks 12–17). Next: the Done when checks below.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -633,12 +633,14 @@ lost. `VisionService` checked by reading. The `ConversationHistory.arguments` co
 says what replay does with unreadable arguments: they are sent back as
 `{"raw": ...}`, not skipped.
 
-#### 17. Ingestion: SSE to a user who left is INFO; the Kafka path reaches its boundary — ⬜
+#### 17. Ingestion: SSE to a user who left is INFO; the Kafka path reaches its boundary — ✅
 
-- `PipelineEventsService.processNewEvent`: the `JsonProcessingException` catch goes,
-  so the Kafka handler reports it with the `fileId`. It also fixes a quiet case: a
-  `PIPELINE_COMPLETE` that fails to serialise today leaves the file committed as
-  `COMPLETED` with no event; after, the transaction rolls back.
+- `PipelineEventsService.processNewEvent`: the `JsonProcessingException` catch stops
+  logging and carrying on; it re-throws unchecked with the cause, so the Kafka handler
+  reports it with the `fileId`. Unchecked because `@Transactional` rolls back only on
+  unchecked exceptions by default, and the consumer keeps its signature. (Corrected
+  at the start of the brick: the "quiet `PIPELINE_COMPLETE`" case written here before
+  can't happen; that event has no metadata, so it is never serialised.)
 - `sendPreviousEvents`: the catch goes. Spring buffers sends made before the endpoint
   returns, so a client can't leave here; the catch only hides unreadable stored
   metadata, which becomes a 500 at the advice.
@@ -649,12 +651,26 @@ says what replay does with unreadable arguments: they are sent back as
   `InternalJwtFilter` (common).
 - Ingestion's "File too big": ERROR → WARN, as in brick 12.
 
-Before: closing a file's page while it processes logs an ERROR with a stack trace
-for every later event. After: one INFO.
+Before: closing a file's page while it processes logs one ERROR with a stack trace
+(the stream is removed after its first failed send; "for every later event", written
+here before, was wrong). After: one INFO, no stack trace.
 
 **DoD:** an emitter whose send throws `IOException` → one INFO, no ERROR, and the
 next broadcast doesn't call it. `PipelineEventsListenerBoundaryTest`: an
 `ObjectMapper` that throws → reported once by the Kafka handler, with the `fileId`.
+
+**Done:** `SseEmitterRegistryTest` and `PipelineEventsServiceTest`, plain unit tests.
+The listener test fakes the whole service, so the second checks the service itself:
+a faked `ObjectMapper` failure makes `processNewEvent` throw with it as the cause, and
+logs nothing (the real mapper can't fail on a Map it has just read from Kafka; the
+test proves the path). Before: one ERROR line each, and `processNewEvent` returned
+normally. `sendPreviousEvents`, `subscribeToEvents` and the events endpoint now
+declare `throws IOException`. `MediaChunkRepositoryTest` still needs Docker.
+
+**Slice 3 check (Done when step 6), 2026-10-17:** every `catch (` in `src/main` outside
+the deprecated chat path is a boundary, re-throws with the cause, or has its comment;
+every `catch (InterruptedException)` restores the flag; the only `"..." + e` left is
+in `ChatService` (deprecated).
 
 ## Done when
 

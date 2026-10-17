@@ -133,7 +133,8 @@ public class GcsStorageService {
       fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
       fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_BIG);
       fileMetadataRepository.save(fileMetadata);
-      log.error("[GCSService] File too big: {}", decodedObjectName);
+      // WARN: a rejected upload is the user's input, not our failure.
+      log.warn("[GCSService] File too big: {}", decodedObjectName);
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
           .eventType(PipelineEventEnum.UPLOAD_REJECTED)

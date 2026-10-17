@@ -66,7 +66,7 @@ public class FilesService {
           gcsStorageService.deleteObject(objectName, fileId);
           log.info("[FilesService] Successfully deleted GCS objects for fileId: {}, objectName: {}", fileId,
               objectName);
-        } catch (Exception e) {
+        } catch (Exception e) { // After commit: the rows are gone, so this can only be logged; the objects stay.
           log.error("[FilesService] Failed to delete GCS objects for fileId: {}, objectName: {}", fileId,
               objectName, e);
         }
