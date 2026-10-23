@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.ProducerListener;
 import org.springframework.util.backoff.FixedBackOff;
 
 import com.cortex.cortex_common.dto.PipelineEventDTO;
@@ -27,5 +28,16 @@ public class KafkaErrorHandlingConfig {
     return new DefaultErrorHandler(
         KafkaFailures.reportAndSkip(value -> value instanceof PipelineEventDTO event ? event.getFileId() : null),
         new FixedBackOff(0L, 0L));
+  }
+
+  /**
+   * Replaces Spring Boot's LoggingProducerListener, which logs every failed send at ERROR on the
+   * producer's thread: without the fileId, and with the payload. The caller already gets the
+   * failure from KafkaSends.await, and its boundary logs it once (ADR-0014).
+   */
+  @Bean
+  public ProducerListener<Object, Object> kafkaProducerListener() {
+    return new ProducerListener<>() {
+    };
   }
 }

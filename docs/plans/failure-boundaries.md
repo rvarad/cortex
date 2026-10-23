@@ -2,7 +2,7 @@
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
 (bricks 12–17). Done when steps 0–4 run on 2026-10-22; they found two defects, now
-bricks 18–19 (below Slice 3). Next: brick 18, then 19, then step 4 again and step 5.
+bricks 18–19 (below Slice 3). Brick 18 done; next: brick 19, then step 4 again and step 5.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -683,7 +683,7 @@ in `ChatService` (deprecated).
 Two defects no unit test could see: the tests fake `KafkaTemplate`, and the retry
 gap needs uploads slower than ffmpeg, which only real media gives.
 
-#### 18. One error line per failed Kafka send — ⬜
+#### 18. One error line per failed Kafka send — ✅
 
 Spring Boot gives every `KafkaTemplate` a `LoggingProducerListener`, which logs each
 failed send at ERROR, on the producer's network thread: no `fileId` in MDC, and the
@@ -703,6 +703,11 @@ their boundary. Step 4: 21 failed sends gave 21 of these lines next to the job's
 **DoD:** in each service, a context with Kafka's auto-configuration and that config:
 the `ProducerListener` bean is ours, not `LoggingProducerListener`. Red: it is
 Spring's.
+
+**Done:** `KafkaErrorHandlingConfigTest` in ingestion, media and rag. Red in all three
+(`LoggingProducerListener`), green after the bean. The embedded-Kafka listener tests,
+which load the same config, stay green. The live check is Done when step 4, run again
+after brick 19.
 
 #### 19. A chunk that fails once really gets its retry — ⬜
 
