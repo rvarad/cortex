@@ -2,7 +2,8 @@
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
 (bricks 12–17). Done when steps 0–4 run on 2026-10-22; they found two defects, now
-bricks 18–19 (below Slice 3), both done. Next: Done when step 4 again, then step 5.
+bricks 18–19 (below Slice 3), both done. All Done when steps pass (2026-10-23). Brick 11's browser check found
+brick 20 (a failed login shows a 500). Next: brick 20, then that check again.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -52,6 +53,10 @@ throw.
   work.
 - **Normalisation in its own service class.** `MediaProcessingService` is too large;
   this is a refactor, done after this plan.
+- **Logging out with requests still open.** Seen 2026-10-23: logging out while a page
+  has requests open (a file page's event stream) gives the gateway about seven Tomcat
+  ERROR lines — "Session was invalidated", and "Access Denied" after the response was
+  committed. The gateway's session handling, later.
 - **Stopping work when a file is deleted.** Found by Done when step 4: a file deleted
   while its media job runs is gone from the database and GCS, but the job doesn't
   know; it kept uploading for 10 minutes and put about 21 chunk objects back into GCS,
@@ -747,6 +752,30 @@ chunk(s) failed to upload, after a retry", with no retry. Green: the log shows t
 "Media processing completed". The other two cases stay green. Cleanup's two waits are
 one method, `awaitUploads`, with brick 14's `shortcut:` comment on its semaphore wait.
 
+#### 20. A failed login answers with the redirect, not a 500 — ⬜
+
+Found by brick 11's browser check (2026-10-23, ingestion stopped): a bare Tomcat
+"HTTP Status 500" page, not the landing page with the "Sign-in failed" toast.
+`LoginFailureHandler` logged correctly (one ERROR, with the gRPC cause), then called
+`SimpleUrlAuthenticationFailureHandler`, which stores the exception in the HTTP session
+(`WebAttributes.AUTHENTICATION_EXCEPTION`), for a server-rendered login page to show
+after the redirect. The gateway's sessions are in Redis (Spring Session), saved just
+before the response goes out; the exception's cause holds `io.grpc.Status`, which
+isn't serialisable, so the save throws and replaces the redirect with a 500 (three
+more ERROR lines). The frontend never reads that attribute; it reads only
+`?login=failed`. `LoginFailureHandlerTest` missed it: a mock session doesn't
+serialise.
+
+- `LoginFailureHandler` implements `AuthenticationFailureHandler` itself instead of
+  extending Spring's handler: same log lines, then a plain redirect
+  (`DefaultRedirectStrategy`) to `/?login=failed`, nothing stored in the session.
+  `SecurityConfig` doesn't change.
+
+**DoD:** `LoginFailureHandlerTest`: a request that already has a session (the real one
+holds the OAuth2 authorization request) → after a failed sync the session holds no
+stored exception, and the redirect is unchanged. Red: Spring stores it. Then the brick
+11 browser check again.
+
 ## Done when
 
 0. **✅ 2026-10-22:** raise the ack deadline of the Pub/Sub push subscription that
@@ -775,9 +804,17 @@ one method, `awaitUploads`, with brick 14's `shortcut:` comment on its semaphore
    before failing, five uploads at a time, and after brick 19 each failed chunk is
    tried once more. **2026-10-22:** the job's one ERROR line was right (`fileId`, cause
    `TimeoutException`, no `totalChunks`, work directory deleted), after 10 minutes;
-   but it found bricks 18 and 19. Run it again after them.
+   but it found bricks 18 and 19. Run it again after them. **✅ 2026-10-23, after
+   bricks 18–19:** one ERROR line from the job (`fileId`, cause `TimeoutException`), no
+   `LoggingProducerListener` line, 32 "Upload failed" WARNs for 16 chunks (first try
+   and retry), "Retrying 16 chunk(s) that failed once", work directory deleted; failed
+   16 minutes after Kafka stopped.
 5. Ask for another user's file id (`DELETE /api/v1/files/<id>`) through the gateway.
-   The answer is 404, not 500.
+   The answer is 404, not 500. **✅ 2026-10-23:** 404 for a made-up id from the
+   browser; one WARN from ingestion's `ApiExceptionHandler` with the id in MDC, no ERROR
+   in ingestion or the gateway. (A missing id and another user's id get the same answer
+   on purpose, brick 8.)
 6. Grep `src/main` for `catch (`: every hit is a boundary handler, a re-throw, or has
    a comment on its line. `ChatController`, `ChatService` and `VertexAnswerGenerator`
-   are skipped (deprecated; see Not doing).
+   are skipped (deprecated; see Not doing). **✅ 2026-10-17** (Slice 3 check, brick 17);
+   bricks 18–19 add no `catch`.
