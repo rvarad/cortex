@@ -239,6 +239,33 @@ class MediaJobUploadFailuresTest {
     assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
+  @Test
+  void theLastChunkFailingOnce_isRetriedToo_andTheFileCompletes() throws Exception {
+    // ---- Arrange: one GCS blip on the last audio chunk. The watcher queues a chunk only when the
+    // next one appears, so the last one is queued by cleanup's first sweep and uploads after it:
+    // its failure comes too late for that sweep to retry ----
+    AtomicBoolean failedOnce = new AtomicBoolean();
+    when(gcsStorageService.uploadChunk(anyString(), any(Path.class))).thenAnswer(invocation -> {
+      Path chunk = invocation.getArgument(1);
+      if (chunk.getFileName().toString().equals("audio_chunk_002.wav") && failedOnce.compareAndSet(false, true)) {
+        throw new IOException("GCS blip");
+      }
+      return "chunks/" + chunk.getFileName();
+    });
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: retried after the uploads, so the file completes with all three chunks ----
+    assertThat(failedOnce).as("the blip happened").isTrue();
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines from our code").isEmpty();
+    assertThat(linesAt(Level.WARN)).as("WARN lines")
+        .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_002.wav"));
+    verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
+        eq(true), eq(true), eq("h264"));
+    assertThat(workDir()).as("the work directory").doesNotExist();
+  }
+
   /** Where the job keeps its chunks and playback file while it runs. */
   private Path workDir() {
     return Paths.get("/tmp/media-processing-service-chunks", objectName);

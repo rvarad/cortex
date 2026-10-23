@@ -2,7 +2,7 @@
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
 (bricks 12–17). Done when steps 0–4 run on 2026-10-22; they found two defects, now
-bricks 18–19 (below Slice 3). Brick 18 done; next: brick 19, then step 4 again and step 5.
+bricks 18–19 (below Slice 3), both done. Next: Done when step 4 again, then step 5.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -709,7 +709,7 @@ Spring's.
 which load the same config, stay green. The live check is Done when step 4, run again
 after brick 19.
 
-#### 19. A chunk that fails once really gets its retry — ⬜
+#### 19. A chunk that fails once really gets its retry — ✅
 
 Cleanup re-queues `FAILED` chunks only in its first sweep, which runs once, when
 ffmpeg ends. The upload worker marks a chunk `FAILED` but doesn't queue it again. ffmpeg
@@ -739,6 +739,13 @@ message).
 watcher never queues the last chunk; only the first sweep does, so it uploads after
 that sweep) → the file completes with all chunks. Red: the job fails. "Fails twice"
 and "fails once early" stay green.
+
+**Done:** a third case in `MediaJobUploadFailuresTest`: one GCS blip on `audio_chunk_002.wav`,
+the last chunk, which only the first sweep queues. Red: the whole job failed, "1
+chunk(s) failed to upload, after a retry", with no retry. Green: the log shows the WARN,
+"Retrying 1 chunk(s) that failed once", the second upload, `totalChunks = 3`, and
+"Media processing completed". The other two cases stay green. Cleanup's two waits are
+one method, `awaitUploads`, with brick 14's `shortcut:` comment on its semaphore wait.
 
 ## Done when
 

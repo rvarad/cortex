@@ -810,7 +810,8 @@ public class MediaProcessingService {
     Path chunksDir = processContext.getWorkDir().resolve("chunks");
     log.info("Starting cleanup for chunks directory: {}", chunksDir);
 
-    // 1. Sweep for any remaining chunks that weren't uploaded. A FAILED one gets its one retry here.
+    // 1. Sweep for any remaining chunks that weren't uploaded: the last ones, which the watcher
+    // never queues, and any that failed before ffmpeg ended (their one retry).
     try (var files = Files.list(chunksDir)) {
       files.filter(path -> {
         String name = path.getFileName().toString();
@@ -827,18 +828,22 @@ public class MediaProcessingService {
           });
     }
 
-    // 2. Wait for upload queue to drain. A dead dispatcher would never drain it: check for that.
-    while (!processContext.getUploadQueue().isEmpty()) {
-      rethrowIfFailed(helpers);
-      log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
-      log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
-      Thread.sleep(1000);
-    }
+    // 2. Wait for the queue and the running uploads.
+    awaitUploads(processContext, helpers);
 
-    // 3. Wait for all in-progress uploads to complete (all semaphore slots
-    // released)
-    uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
-    uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+    // 3. Retry sweep: queue again each chunk that failed once. Most failures come here, after the
+    // first sweep: ffmpeg takes seconds, the uploads minutes. Retried only now, after everything
+    // else has ended, to give the problem time to pass. A chunk with two causes has had its retry.
+    List<Path> failedOnce = processContext.getChunkUploadStatusMap().entrySet().stream()
+        .filter(entry -> entry.getValue() == UploadStatus.FAILED)
+        .filter(entry -> processContext.getChunkUploadFailures().getOrDefault(entry.getKey(), List.of()).size() == 1)
+        .map(entry -> Path.of(entry.getKey()))
+        .toList();
+    if (!failedOnce.isEmpty()) {
+      log.info("Retrying {} chunk(s) that failed once", failedOnce.size());
+      failedOnce.forEach(path -> safeEnqueue(processContext, path));
+      awaitUploads(processContext, helpers);
+    }
 
     // 4. Verify all uploads completed successfully. A chunk still FAILED has had its retry: the
     // file would complete without it, so the job fails instead.
@@ -877,6 +882,22 @@ public class MediaProcessingService {
     }
 
     log.info("Successfully cleaned up chunks directory: {}", chunksDir);
+  }
+
+  /** Waits until the upload queue is empty and every running upload has ended. */
+  private void awaitUploads(MediaProcessingContext processContext, List<Future<Void>> helpers) throws Exception {
+    // A dead dispatcher would never drain the queue: check for that.
+    while (!processContext.getUploadQueue().isEmpty()) {
+      rethrowIfFailed(helpers);
+      log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
+      log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
+      Thread.sleep(1000);
+    }
+
+    // shortcut: all semaphore slots free means every job's uploads have ended; correct while one
+    // file is processed at a time. A per-job count replaces it (per-job-upload-wait.md).
+    uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
+    uploadSlots.release(MAX_CONCURRENT_UPLOADS);
   }
 
   /** get() on a finished helper throws its failure, if it had one. */
