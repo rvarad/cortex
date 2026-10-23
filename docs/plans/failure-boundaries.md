@@ -1,12 +1,12 @@
 # Failure boundaries
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
-(bricks 12–17). Next: the Done when checks below.
+(bricks 12–17). Done when steps 0–4 run on 2026-10-22; they found two defects, now
+bricks 18–19 (below Slice 3). Next: brick 18, then 19, then step 4 again and step 5.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
-the broker. **Before merging to `master`:
-Done when step 0 (raise the Pub/Sub ack deadline) — not done.**
+the broker.
 **Branch:** reliability-hardening (not merged to `master` until after the demo; prod
 deploys from `master`)
 **Started:** 2026-10-05
@@ -52,6 +52,12 @@ throw.
   work.
 - **Normalisation in its own service class.** `MediaProcessingService` is too large;
   this is a refactor, done after this plan.
+- **Stopping work when a file is deleted.** Found by Done when step 4: a file deleted
+  while its media job runs is gone from the database and GCS, but the job doesn't
+  know; it kept uploading for 10 minutes and put about 21 chunk objects back into GCS,
+  orphans of a deleted file. Planned by Varad, not final: a delete marks the file "for
+  deletion" (shown as deleted in the UI), and every later step on that file —
+  chunking, uploads, AI calls — checks the mark and stops. Its own plan.
 
 ## Decisions
 
@@ -672,26 +678,92 @@ the deprecated chat path is a boundary, re-throws with the cause, or has its com
 every `catch (InterruptedException)` restores the flag; the only `"..." + e` left is
 in `ChatService` (deprecated).
 
+### Found by the Done when runs (2026-10-22)
+
+Two defects no unit test could see: the tests fake `KafkaTemplate`, and the retry
+gap needs uploads slower than ffmpeg, which only real media gives.
+
+#### 18. One error line per failed Kafka send — ⬜
+
+Spring Boot gives every `KafkaTemplate` a `LoggingProducerListener`, which logs each
+failed send at ERROR, on the producer's network thread: no `fileId` in MDC, and the
+message's payload in the line (a `TRANSCRIPTION_COMPLETE` event carries the
+transcript). Our callers already report the failure, through `KafkaSends.await` to
+their boundary. Step 4: 21 failed sends gave 21 of these lines next to the job's one.
+
+- In each Kafka service (ingestion, media, rag), a `ProducerListener` bean that does
+  nothing, in the service's own `KafkaErrorHandlingConfig` (`cortex-common` holds no
+  beans, ADR-0014 2026-10-12). Spring Boot then doesn't create its own. The comment
+  says why.
+- Decided with Varad: an empty listener, not one that logs at DEBUG. The boundary's
+  line already has the `fileId` and the cause chain. Metrics and traces for sends come
+  with the observability work, from Spring Kafka's Micrometer observation
+  (`spring.kafka.template.observation-enabled`), not from a listener of ours.
+
+**DoD:** in each service, a context with Kafka's auto-configuration and that config:
+the `ProducerListener` bean is ours, not `LoggingProducerListener`. Red: it is
+Spring's.
+
+#### 19. A chunk that fails once really gets its retry — ⬜
+
+Cleanup re-queues `FAILED` chunks only in its first sweep, which runs once, when
+ffmpeg ends. The upload worker marks a chunk `FAILED` but doesn't queue it again. ffmpeg
+takes seconds and the uploads minutes, so most failures come after that sweep, and no
+chunk failing then is tried again; the job still says "after a retry". Step 4: ffmpeg
+ended 19 s in, every send failed later, 21 chunks failed with one WARN each, and the
+job failed with no retry. Decision 2A (keep one retry) held only for chunks failing
+before ffmpeg ends. Decided with Varad: make the retry happen (not only fix the
+message).
+
+- After cleanup's two waits (queue empty, running uploads done), a second sweep:
+  queue every chunk that is `FAILED` with one stored cause, then wait again. A chunk
+  already retried has two causes and is not tried a third time. The two waits become
+  one private method, called twice. Verify then fails the job only for chunks that
+  failed twice, so its message is true.
+- Not at the worker (re-queue at once on its first failure): that retries in the
+  middle of the same outage. Retrying after everything else ends gives the problem
+  time to pass.
+- Concurrency unchanged: retries use the same queue, dispatcher and 5-upload cap;
+  the dispatcher is still running, since `isRunning` turns false only after cleanup;
+  the second sweep runs after all uploads have ended, so no worker changes a status
+  while it reads them. The shared-semaphore `shortcut:` (brick 14) is used twice.
+- Cost: during a long outage, a failing job holds its thread about twice as long
+  (step 4: about 20 minutes instead of 10), because the retried sends wait again.
+
+**DoD:** `MediaJobUploadFailuresTest` with real ffmpeg: the last chunk fails once (the
+watcher never queues the last chunk; only the first sweep does, so it uploads after
+that sweep) → the file completes with all chunks. Red: the job fails. "Fails twice"
+and "fails once early" stay green.
+
 ## Done when
 
-0. **⬜ NOT DONE — before merging to `master`:** in the GCP console, raise the
-   ack deadline of the Pub/Sub push subscription that calls the upload webhook to
-   more than 150 s (600 s is the maximum). Without it, a short Kafka outage makes
-   Pub/Sub send the same upload notification twice and the file is processed twice
-   (see brick 6). Not checkable locally: in development the webhook is called from
-   Postman. Tick this line when it's done.
-1. `mvn -B verify` is green.
+0. **✅ 2026-10-22:** raise the ack deadline of the Pub/Sub push subscription that
+   calls the upload webhook to more than 150 s (600 s is the maximum). Without it, a
+   short Kafka outage makes Pub/Sub send the same upload notification twice and the
+   file is processed twice (see brick 6). Done while recreating the prod
+   subscription, which had disappeared (a subscription expires after 31 days without
+   activity unless told not to): `cortex-file-ingested-push` on topic
+   `cortex-file-ingested`, endpoint `https://cortex-media.in/api/v1/webhook/notify-upload`,
+   ack deadline 600 s, retry backoff 10–600 s, `--expiration-period=never`.
+1. `mvn -B verify` is green. **✅ 2026-10-22:** 84 tests, 3 skipped (the
+   `contextLoads` ones), `MediaChunkRepositoryTest` included.
 2. Locally (`docker compose up -d postgres redis kafka`, services on the dev profile),
    upload a short normal video. It completes, and no service logs an ERROR line.
+   **✅ 2026-10-22:** 11/11 chunks, `COMPLETED`, no ERROR, no work directory left. (In
+   dev the webhook is called by hand: Pub/Sub can't reach localhost.)
 3. Set a wrong Groq key in rag's dev config and upload again. Rag logs one ERROR line
    per audio chunk, each with the `fileId`. No record is redelivered by Kafka. (Groq
    still sees three attempts per chunk: `TranscriptionService` has its own retry
-   loop, which stays until the retry ADR; brick 16.)
+   loop, which stays until the retry ADR; brick 16.) **✅ 2026-10-22**, with the key
+   overridden by environment for rag only: 2 chunks, 2 records, 6 WARN, 2 ERROR. One
+   chunk's last cause was the 401, the other's a dropped connection.
 4. Stop the Kafka container while a file is chunking. Media logs one ERROR line with
-   the `fileId`, from the job's boundary. Expect it to take one to two minutes: the
-   producer waits up to `max.block.ms` (60 s) for topic metadata, and retries a send
-   for up to `delivery.timeout.ms` (2 minutes) before it reports a failure.
-   `KafkaSends` waits 150 s, so the producer's answer always comes first.
+   the `fileId`, from the job's boundary. Since brick 13 it takes longer than one
+   send's timeout: each upload's sends wait up to `delivery.timeout.ms` (2 minutes)
+   before failing, five uploads at a time, and after brick 19 each failed chunk is
+   tried once more. **2026-10-22:** the job's one ERROR line was right (`fileId`, cause
+   `TimeoutException`, no `totalChunks`, work directory deleted), after 10 minutes;
+   but it found bricks 18 and 19. Run it again after them.
 5. Ask for another user's file id (`DELETE /api/v1/files/<id>`) through the gateway.
    The answer is 404, not 500.
 6. Grep `src/main` for `catch (`: every hit is a boundary handler, a re-throw, or has
