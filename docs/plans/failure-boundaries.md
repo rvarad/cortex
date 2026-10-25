@@ -783,8 +783,13 @@ serialise.
 
 **Browser check, 2026-10-25** (ingestion stopped): the landing page with the "Sign-in
 failed" toast; the gateway logged one ERROR per try from `LoginFailureHandler` and no
-Tomcat or serialisation ERROR. The normal login, with ingestion running, was not run
-again after this brick. The visible flash of `?login=failed` in the address bar stays
+Tomcat or serialisation ERROR. **Normal path, 2026-10-25** (all services up): login
+synced the user once (one request in ingestion, one response in the gateway) and
+reached the dashboard; an upload then completed, 5 of 5 chunks, playback `READY`, with
+no ERROR line for that file in any service. Rag logged three ERROR lines at its start,
+one per stale `media-chunk-uploaded` record of the deleted step 4 file (Gemini 404,
+the chunk objects were gone): reported once each and skipped, as ADR-0014 says; the
+work itself is the deletion gap in Not doing. The visible flash of `?login=failed` in the address bar stays
 as it is for now (Varad's choice); a cookie or a popup login would hide it, a UX change
 for later.
 
