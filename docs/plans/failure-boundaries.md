@@ -2,8 +2,9 @@
 
 **Status:** Slice 1 done (bricks 1–7). Slice 2 done (bricks 8–11). Slice 3 done
 (bricks 12–17). Done when steps 0–4 run on 2026-10-22; they found two defects, now
-bricks 18–19 (below Slice 3), both done. All Done when steps pass (2026-10-23). Brick 11's browser check found
-brick 20 (a failed login shows a 500). Next: brick 20, then that check again.
+bricks 18–19 (below Slice 3), both done. All Done when steps pass (2026-10-23).
+Brick 11's browser check found brick 20 (a failed login showed a 500); brick 20 is
+done and checked in the browser (2026-10-25). Next: merge to `master` after the demo.
 Every media thread, the media job, and each conversation answer run inside
 `BackgroundTask`; every Kafka listener reports a failed or unreadable record once,
 through the shared `KafkaFailures` report, and moves on; every Kafka send waits for
@@ -752,7 +753,7 @@ chunk(s) failed to upload, after a retry", with no retry. Green: the log shows t
 "Media processing completed". The other two cases stay green. Cleanup's two waits are
 one method, `awaitUploads`, with brick 14's `shortcut:` comment on its semaphore wait.
 
-#### 20. A failed login answers with the redirect, not a 500 — ⬜
+#### 20. A failed login answers with the redirect, not a 500 — ✅
 
 Found by brick 11's browser check (2026-10-23, ingestion stopped): a bare Tomcat
 "HTTP Status 500" page, not the landing page with the "Sign-in failed" toast.
@@ -770,11 +771,31 @@ serialise.
   extending Spring's handler: same log lines, then a plain redirect
   (`DefaultRedirectStrategy`) to `/?login=failed`, nothing stored in the session.
   `SecurityConfig` doesn't change.
+- The toast. The first browser check after that change (2026-10-25) got the redirect
+  to `/?login=failed` and no session (the HAR shows `/auth/me` → 401), but no toast.
+  `sonner`'s `<Toaster />` shows only toasts sent after its own `useEffect`
+  subscribes, and it sat after `{children}` in `layout.tsx`; React runs sibling effects
+  in order, so the landing page sent "Sign-in failed" first and it was lost (then
+  `router.replace("/")` removed the flag). So brick 11's toast never worked on a fresh
+  load; brick 11 checked the frontend only with lint and build. `<Toaster />` now comes
+  before `{children}`, with the reason on that line; this fixes any toast sent on first
+  load.
+
+**Browser check, 2026-10-25** (ingestion stopped): the landing page with the "Sign-in
+failed" toast; the gateway logged one ERROR per try from `LoginFailureHandler` and no
+Tomcat or serialisation ERROR. The normal login, with ingestion running, was not run
+again after this brick. The visible flash of `?login=failed` in the address bar stays
+as it is for now (Varad's choice); a cookie or a popup login would hide it, a UX change
+for later.
 
 **DoD:** `LoginFailureHandlerTest`: a request that already has a session (the real one
 holds the OAuth2 authorization request) → after a failed sync the session holds no
 stored exception, and the redirect is unchanged. Red: Spring stores it. Then the brick
 11 browser check again.
+
+**Done:** red (Spring stored the exception in the session), green after the change;
+the gateway's 6 tests pass, including the full-context one, so `SecurityConfig`
+accepts the handler. The javadoc says why it isn't Spring's handler.
 
 ## Done when
 

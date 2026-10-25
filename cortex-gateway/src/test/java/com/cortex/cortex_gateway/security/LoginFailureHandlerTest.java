@@ -10,8 +10,10 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.web.WebAttributes;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -69,5 +71,25 @@ class LoginFailureHandlerTest {
     assertThat(lines).as("log lines").hasSize(1);
     assertThat(lines.get(0).getLevel()).isEqualTo(Level.WARN);
     assertThat(lines.get(0).getThrowableProxy()).as("no stack trace: not our failure").isNull();
+  }
+
+  @Test
+  void aFailedLogin_storesNothingInTheSession() throws Exception {
+    // The real request already has a session: it holds the OAuth2 authorization request. Sessions
+    // live in Redis and are serialised before the response goes out, and a failed sync's cause
+    // holds io.grpc.Status, which isn't serialisable: storing the exception there turned the
+    // redirect into a 500. The frontend reads only the URL, so nothing needs storing.
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    MockHttpSession session = new MockHttpSession();
+    request.setSession(session);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    handler.onAuthenticationFailure(request, response, new OAuth2AuthenticationException(
+        new OAuth2Error("user_sync_failed", "User sync failed for google-sub-1", null),
+        Status.UNAVAILABLE.asRuntimeException()));
+
+    assertThat(session.getAttribute(WebAttributes.AUTHENTICATION_EXCEPTION)).as("exception stored in the session")
+        .isNull();
+    assertThat(response.getRedirectedUrl()).isEqualTo("http://localhost:3000/?login=failed");
   }
 }

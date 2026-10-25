@@ -28,8 +28,11 @@ export default function RootLayout({
           {/* Mounted at the root so the dock survives navigation between the
               dashboard and a file's chat page, and both can drive it. */}
           <MediaPlayerProvider>
-            {children}
+            {/* Before the page: React runs sibling effects in order, and the Toaster only
+                shows toasts sent after its effect subscribes. After the page, a toast sent
+                on first load (the "Sign-in failed" one) was lost. */}
             <Toaster richColors position="bottom-right" />
+            {children}
           </MediaPlayerProvider>
         </AuthProvider>
       </body>
