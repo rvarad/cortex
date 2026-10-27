@@ -64,7 +64,8 @@ public class SseEmitterRegistry {
       try {
         emitter.complete();
       } catch (Exception e) { // Carry on: one stream failing to close must not leave the others open.
-        log.error("Failed to complete emitter for fileId {}.", fileId, e);
+        // INFO, no stack trace: it fails because the page has already gone (ADR-0014's SSE rule).
+        log.info("Client left; its stream was already closed for fileId {}", fileId);
       }
     });
 

@@ -67,6 +67,25 @@ class SseEmitterRegistryTest {
     assertThat(infos.get(0).getThrowableProxy()).as("no stack trace").isNull();
   }
 
+  @Test
+  void aPageThatWasClosed_failingToComplete_isAnInfoLine_notAnError() {
+    // complete() fails when the page has already gone: the same normal case as a failed send.
+    UUID fileId = UUID.randomUUID();
+    SseEmitter closedPage = new SseEmitter(0L) {
+      @Override
+      public void complete() {
+        throw new IllegalStateException("ResponseBodyEmitter has already completed");
+      }
+    };
+    registry.addEmitter(fileId, closedPage);
+
+    registry.completeEmitters(fileId);
+
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines").isEmpty();
+    assertThat(linesAt(Level.INFO)).as("INFO lines")
+        .anySatisfy(line -> assertThat(line.getThrowableProxy()).as("no stack trace").isNull());
+  }
+
   private static PipelineEventDTO event(UUID fileId, PipelineEventEnum type) {
     return PipelineEventDTO.builder().fileId(fileId).eventType(type).message("test").build();
   }
