@@ -19,6 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,6 +30,7 @@ import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -33,6 +38,7 @@ import org.springframework.stereotype.Service;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.MediaFileManifestDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.KafkaSends;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
@@ -40,13 +46,12 @@ import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
+import com.cortex.cortex_common.utils.BackgroundTask;
 import com.cortex.cortex_media_processing_service.service.processing.ChunkPair;
 import com.cortex.cortex_media_processing_service.service.processing.MediaProcessingContext;
 import com.cortex.cortex_media_processing_service.service.processing.UploadStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
-import static com.cortex.cortex_common.utils.MdcUtils.withMDC;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,28 +99,33 @@ public class MediaProcessingService {
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
   private final Semaphore normalisationSlots = new Semaphore(MAX_CONCURRENT_NORMALISATIONS);
 
-  public void processMedia(String objectName, UUID fileId, String userId) {
+  /**
+   * Runs one media job. Throws whatever goes wrong: the caller wraps this in BackgroundTask, the
+   * job's boundary, which is the one place its failures are reported (ADR-0014).
+   */
+  public void processMedia(String objectName, UUID fileId, String userId) throws Exception {
     log.info("Beginning chunking for file: {}", objectName);
 
     MediaProcessingContext ctx = null;
+    Process ffmpegProcess = null;
+    Thread normalisationThread = null;
 
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
-      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElseThrow(() -> {
-        log.error("[GCSService] File metadata not found for objectName: {}", objectName);
-        return new RuntimeException("File metadata not found for objectName: " + objectName);
-      });
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId)
+          .orElseThrow(() -> new IllegalStateException("File metadata not found for objectName: " + objectName));
 
       MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl, fileId);
       if (manifestDTO.isCorrupted()) {
-        log.error("Media file is corrupted: {}", objectName);
+        // WARN: a rejected upload is the user's input, not our failure.
+        log.warn("Media file is corrupted: {}", objectName);
         gcsStorageService.deleteObject(objectName);
         fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
         fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
         fileMetadataRepository.save(fileMetadata);
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        sendPipelineEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
                 .message("This file appears to be corrupted and cannot be processed. It will be deleted.")
                 .metadata(Map.of(
@@ -148,7 +158,7 @@ public class MediaProcessingService {
                 "fileStatus", fileMetadata.getFileStatus().toString()))
             .build();
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+        sendPipelineEvent(fileId.toString(), pipelineEventDTO);
 
         return;
       }
@@ -176,20 +186,19 @@ public class MediaProcessingService {
       String videoPattern = workDir.resolve("chunks").resolve("video_chunk_%03d.mp4").toString();
       String audioPattern = workDir.resolve("chunks").resolve("audio_chunk_%03d.wav").toString();
 
-      Thread normalisationThread = null;
-
       if (plan.equals(NormalisationEnum.PASSTHROUGH)) {
         fileMetadataRepository.updatePlaybackReady(fileId, objectName);
       } else {
-        normalisationThread = Thread.startVirtualThread(withMDC(() -> {
+        normalisationThread = Thread.startVirtualThread(BackgroundTask.of("normalisation", () -> {
+          normalisationSlots.acquire();
           try {
-            normalisationSlots.acquire();
+            // The sends stay outside the catch below: a failed send is not a failed
+            // normalisation, so it goes to the boundary and leaves playback as it is.
+            sendPipelineEvent(fileId.toString(),
+                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
+                    .message("Generating playback version").build());
 
             try {
-              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
-                      .message("Generating playback version").build());
-
               Path local = null;
               if (plan.equals(NormalisationEnum.REMUX)) {
                 local = remuxFile(streamUrl, workDir);
@@ -206,27 +215,43 @@ public class MediaProcessingService {
 
               fileMetadataRepository.updatePlaybackReady(fileId, destinationObjectName);
               Files.deleteIfExists(local);
-
-              kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
-                      .message("Playback version is ready").build());
-            } finally {
-              normalisationSlots.release();
+            } catch (Exception e) { // Carrying on is correct: the file stays searchable, only playback is lost.
+              if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+              }
+              log.error("Normalisation failed for {}", fileId, e);
+              // Persist the terminal playback state BEFORE announcing, so any
+              // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
+              fileMetadataRepository.updatePlaybackUnavailable(fileId);
+              sendPipelineEvent(fileId.toString(),
+                  PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
+                      .message("Playback version could not be generated").build());
+              return;
             }
-          } catch (Exception e) {
-            log.error("Normalisation failed for {}", fileId, e);
-            // Persist the terminal playback state BEFORE announcing, so any
-            // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
-            fileMetadataRepository.updatePlaybackUnavailable(fileId);
-            kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
-                    .message("Playback version could not be generated").build());
+
+            sendPipelineEvent(fileId.toString(),
+                PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
+                    .message("Playback version is ready").build());
+          } finally {
+            normalisationSlots.release();
           }
         }));
       }
 
-      Thread.startVirtualThread(withMDC(() -> startDirectoryWatcher(processContext)));
-      Thread.startVirtualThread(withMDC(() -> startUploadDispatcher(processContext)));
+      // Tasks the job waits for (ADR-0014, 2026-10-16): a failure comes back to it through get().
+      FutureTask<Void> watcher = new FutureTask<>(() -> {
+        MDC.put("fileId", fileId.toString()); // a new thread has no MDC
+        startDirectoryWatcher(processContext);
+        return null;
+      });
+      FutureTask<Void> dispatcher = new FutureTask<>(() -> {
+        MDC.put("fileId", fileId.toString());
+        startUploadDispatcher(processContext);
+        return null;
+      });
+      Thread.startVirtualThread(watcher);
+      Thread.startVirtualThread(dispatcher);
+      List<Future<Void>> helpers = List.of(watcher, dispatcher);
 
       processContext.getLastChunkTimeMS().set(System.currentTimeMillis());
 
@@ -234,24 +259,24 @@ public class MediaProcessingService {
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), pipelineEventDTO);
+      sendPipelineEvent(fileId.toString(), pipelineEventDTO);
 
-      Process ffmpegProcess = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
+      Process chunking = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
+      ffmpegProcess = chunking;
 
-      Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(ffmpegProcess)));
+      Thread.startVirtualThread(BackgroundTask.of("ffmpeg output reader", () -> monitorFFmpegOutput(chunking)));
 
-      waitForFFmpegCompletion(ffmpegProcess, processContext.getLastChunkTimeMS());
+      waitForFFmpegCompletion(chunking, processContext.getLastChunkTimeMS(), helpers);
 
-      int exitCode = ffmpegProcess.exitValue();
+      int exitCode = chunking.exitValue();
       if (exitCode != 0) {
-        log.error("FFmpeg process failed with exit code: {}", exitCode);
         throw new Exception("FFmpeg process failed with exit code: " + exitCode);
       }
 
       log.info("FFmpeg process completed successfully");
 
-      cleanUpWorkingDir(processContext);
+      cleanUpWorkingDir(processContext, helpers);
 
       processContext.getIsRunning().set(false);
 
@@ -266,31 +291,35 @@ public class MediaProcessingService {
           manifestDTO.getVideoCodec());
       log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
 
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+      sendPipelineEvent(fileId.toString(),
           PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.CHUNKING_COMPLETE)
               .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
               .build());
 
-      // Hold the Kafka message open until normalization also finishes
-      // (retry-correctness).
-      if (normalisationThread != null)
-        normalisationThread.join();
+      log.info("Media processing completed.");
 
-      // Recursive (not deleteIfExists, which throws on a non-empty dir): on a
-      // normalization failure a partial normalized.* file can be left behind, and
-      // we must not let cleanup turn a best-effort failure into a pipeline failure.
-      deleteRecursively(workDir);
-
-      log.info("Media processing completed and cleaned up.");
-
-    } catch (Exception e) {
-      log.error("FFmpeg execution failed", e);
-      // processContext.getIsRunning().set(false); // Ensure we signal shutdown even
-      // on error
-      throw new RuntimeException("Failed to process media file: " + objectName + " exception: " + e);
     } finally {
+      // On success and on failure alike: a failed job leaves no process, upload or file behind.
       if (ctx != null) {
+        if (ffmpegProcess != null) {
+          ffmpegProcess.destroyForcibly(); // a no-op once it has exited
+        }
+        ctx.getUploadQueue().clear();
         ctx.getIsRunning().set(false);
+        // shortcut: waits for every job's uploads; correct while one file is processed at a time.
+        // A per-job count replaces it (per-job-upload-wait.md).
+        uploadSlots.acquireUninterruptibly(MAX_CONCURRENT_UPLOADS);
+        uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+        if (normalisationThread != null) {
+          try {
+            normalisationThread.join(); // it writes into the work directory
+          } catch (InterruptedException e) { // Carry on: a throw here would hide the job's own failure.
+            Thread.currentThread().interrupt();
+          }
+        }
+        // Recursive (not deleteIfExists, which throws on a non-empty dir): a failed
+        // normalisation can leave a partial normalized.* file.
+        deleteRecursively(ctx.getWorkDir());
       }
     }
   }
@@ -314,7 +343,7 @@ public class MediaProcessingService {
     }
   }
 
-  private boolean isAudioSilent(String streamUrl) {
+  private boolean isAudioSilent(String streamUrl) throws InterruptedException {
     log.info("Checking if audio is silent: {}", streamUrl);
     Double maxVolume = null;
 
@@ -332,15 +361,17 @@ public class MediaProcessingService {
             maxVolume = Double.parseDouble(matcher.group(1));
           }
         }
+        process.waitFor();
+      } finally {
+        process.destroyForcibly(); // a no-op once it has exited
       }
-      process.waitFor();
 
       if (maxVolume == null)
         return false;
 
       return maxVolume < SILENCE_FLOOR_DB;
-    } catch (Exception e) {
-      log.error("Error checking if audio is silent", e);
+    } catch (IOException | NumberFormatException e) { // "Not silent": a wasted transcription beats a lost one.
+      log.warn("Could not check if audio is silent; treating it as not silent", e);
       return false;
     }
   }
@@ -375,79 +406,71 @@ public class MediaProcessingService {
     return new String(data, position + 4, 4, StandardCharsets.US_ASCII);
   }
 
-  private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) {
+  private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) throws Exception {
     log.info("Probing media file: {}", streamUrl);
 
-    kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+    sendPipelineEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
             .message("Analyzing media file").build());
 
+    ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams",
+        streamUrl);
+
+    Process process = processBuilder.start();
+    JsonNode root;
+    int exitCode;
     try {
-      ProcessBuilder processBuilder = new ProcessBuilder("ffprobe", "-v", "error", "-print_format", "json",
-          "-show_format", "-show_streams",
-          streamUrl);
-
-      Process process = processBuilder.start();
-
-      boolean video = false;
-      boolean audio = false;
-
-      boolean audioStreamExists = false;
-      JsonNode realVideoStream = null;
-
-      double duration_s = 0.0;
-
-      try {
-        JsonNode root = objectMapper.readTree(process.getInputStream());
-
-        duration_s = root.path("format").path("duration").asDouble(0.0);
-
-        for (JsonNode stream : root.path("streams")) {
-          String codecType = stream.path("codec_type").asText();
-
-          if (codecType.equals("audio")) {
-            audioStreamExists = true;
-          } else if (codecType.equals("video")) {
-            int attachedPic = stream.path("disposition").path("attached_pic").asInt(0);
-            if (attachedPic != 1)
-              realVideoStream = stream;
-          }
-        }
-
-        audio = audioStreamExists && !isAudioSilent(streamUrl);
-        video = realVideoStream != null;
-
-        String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
-
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-          log.error("FFprobe process failed with exit code: {}", exitCode);
-          throw new Exception("FFprobe process failed with exit code: " + exitCode);
-        }
-
-        log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
-
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
-            PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
-                .message("Media analyzed")
-                .metadata(Map.of(
-                    "hasVideo", video,
-                    "hasAudio", audio,
-                    "videoCodec", videoCodec == null ? "" : videoCodec,
-                    "durationSeconds", duration_s))
-                .build());
-
-        return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
-            .videoCodec(videoCodec).build();
-      } catch (Exception e) {
-        log.error("FFprobe process failed", e);
-        throw new RuntimeException("FFprobe process failed", e);
-      }
-
-    } catch (Exception e) {
-      log.error("FFprobe process failed", e);
-      throw new RuntimeException("FFprobe process failed", e);
+      root = objectMapper.readTree(process.getInputStream());
+      exitCode = process.waitFor();
+    } finally {
+      process.destroyForcibly(); // a no-op once it has exited
     }
+    if (exitCode != 0) {
+      throw new Exception("FFprobe process failed with exit code: " + exitCode);
+    }
+
+    boolean video = false;
+    boolean audio = false;
+
+    boolean audioStreamExists = false;
+    JsonNode realVideoStream = null;
+
+    double duration_s = 0.0;
+
+    duration_s = root.path("format").path("duration").asDouble(0.0);
+
+    for (JsonNode stream : root.path("streams")) {
+      String codecType = stream.path("codec_type").asText();
+
+      if (codecType.equals("audio")) {
+        audioStreamExists = true;
+      } else if (codecType.equals("video")) {
+        int attachedPic = stream.path("disposition").path("attached_pic").asInt(0);
+        if (attachedPic != 1)
+          realVideoStream = stream;
+      }
+    }
+
+    audio = audioStreamExists && !isAudioSilent(streamUrl);
+    video = realVideoStream != null;
+
+    String videoCodec = video ? realVideoStream.path("codec_name").asText() : null;
+
+    log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
+
+    sendPipelineEvent(fileId.toString(),
+        PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
+            .message("Media analyzed")
+            .metadata(Map.of(
+                "hasVideo", video,
+                "hasAudio", audio,
+                "videoCodec", videoCodec == null ? "" : videoCodec,
+                "durationSeconds", duration_s))
+            .build());
+
+    return MediaFileManifestDTO.builder().duration_s(duration_s).hasVideo(video).hasAudio(audio)
+        .videoCodec(videoCodec).build();
   }
 
   private Process startFFmpegChunkingProcess(String streamUrl, String videoPattern, String audioPattern,
@@ -493,20 +516,15 @@ public class MediaProcessingService {
    * Returns the local output file (caller uploads it + sets
    * playback_object_name).
    */
-  private Path remuxFile(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.mp4");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:v:0", "-map", "0:a:0?",
-          "-c", "copy",
-          "-movflags", "+faststart",
-          output.toString());
-      runNormalization(command, "REMUX");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to remux file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to remux file : " + streamUrl, e);
-    }
+  private Path remuxFile(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.mp4");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        output.toString());
+    runNormalization(command, "REMUX");
+    return output;
   }
 
   /**
@@ -514,42 +532,32 @@ public class MediaProcessingService {
    * h264. `-pix_fmt yuv420p` is mandatory — iPhone HEVC is often 10-bit HDR, and
    * without forcing 8-bit 4:2:0 the h264 output still won't play in Chrome.
    */
-  private Path transcodeVideo(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.mp4");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:v:0", "-map", "0:a:0?",
-          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-b:a", "128k",
-          "-movflags", "+faststart",
-          "-threads", "2",
-          output.toString());
-      runNormalization(command, "TRANSCODE_VIDEO");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
-    }
+  private Path transcodeVideo(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.mp4");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-threads", "2",
+        output.toString());
+    runNormalization(command, "TRANSCODE_VIDEO");
+    return output;
   }
 
   /**
    * TRANSCODE_AUDIO: WAV (uncompressed) to AAC/m4a — a ~10:1 storage/bandwidth
    * win.
    */
-  private Path transcodeAudio(String streamUrl, Path workDir) {
-    try {
-      Path output = workDir.resolve("normalized.m4a");
-      List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
-          "-map", "0:a:0", "-vn",
-          "-c:a", "aac", "-b:a", "192k",
-          "-movflags", "+faststart",
-          output.toString());
-      runNormalization(command, "TRANSCODE_AUDIO");
-      return output;
-    } catch (Exception e) {
-      log.error("[MediaProcessingService] Failed to transcode file :{}, Due to: {}", streamUrl, e);
-      throw new RuntimeException("[MediaProcessingService] Failed to transcode file : " + streamUrl, e);
-    }
+  private Path transcodeAudio(String streamUrl, Path workDir) throws Exception {
+    Path output = workDir.resolve("normalized.m4a");
+    List<String> command = List.of("ffmpeg", "-hide_banner", "-y", "-i", streamUrl,
+        "-map", "0:a:0", "-vn",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        output.toString());
+    runNormalization(command, "TRANSCODE_AUDIO");
+    return output;
   }
 
   /**
@@ -564,11 +572,15 @@ public class MediaProcessingService {
     processBuilder.redirectErrorStream(true);
     Process process = processBuilder.start();
 
-    Thread.startVirtualThread(withMDC(() -> monitorFFmpegOutput(process)));
+    Thread.startVirtualThread(BackgroundTask.of("normalisation output reader", () -> monitorFFmpegOutput(process)));
 
-    boolean finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
+    boolean finished;
+    try {
+      finished = process.waitFor(FFMPEG_PROCESSING_TIMEOUT_M, TimeUnit.MINUTES);
+    } finally {
+      process.destroyForcibly(); // a no-op once it has exited; kills it on a timeout or an interrupt
+    }
     if (!finished) {
-      process.destroyForcibly();
       throw new Exception(
           "Normalization (" + label + ") exceeded the timeout of " + FFMPEG_PROCESSING_TIMEOUT_M + " minutes");
     }
@@ -581,7 +593,7 @@ public class MediaProcessingService {
     log.info("Normalization ({}) completed successfully: {}", label, command.get(command.size() - 1));
   }
 
-  private void monitorFFmpegOutput(Process process) {
+  private void monitorFFmpegOutput(Process process) throws IOException {
     try (BufferedReader reader = new BufferedReader(
         new InputStreamReader(process.getInputStream()))) {
       String line;
@@ -590,16 +602,17 @@ public class MediaProcessingService {
         log.info("FFmpeg info: {}", line);
         // Could parse progress here for metrics
       }
-    } catch (IOException e) {
-      log.error("Error reading FFmpeg output", e);
     }
   }
 
-  private void waitForFFmpegCompletion(Process process, AtomicLong lastChunkTimeMS) throws Exception {
+  private void waitForFFmpegCompletion(Process process, AtomicLong lastChunkTimeMS, List<Future<Void>> helpers)
+      throws Exception {
     Instant overallDeadline = Instant.now().plus(FFMPEG_PROCESSING_TIMEOUT_M, ChronoUnit.MINUTES);
     long stallTimeoutMS = 1000 * 60 * 3;
 
     while (process.isAlive()) {
+      // Before the stall check: a dead watcher stops the last-chunk time, which looks like a stall.
+      rethrowIfFailed(helpers);
 
       long now = System.currentTimeMillis();
 
@@ -628,7 +641,7 @@ public class MediaProcessingService {
     }
   }
 
-  private void startDirectoryWatcher(MediaProcessingContext processContext) {
+  private void startDirectoryWatcher(MediaProcessingContext processContext) throws Exception {
     try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
 
       Path chunksDir = processContext.getWorkDir().resolve("chunks");
@@ -641,10 +654,7 @@ public class MediaProcessingService {
         WatchKey key;
         try {
           key = watchService.poll(500, TimeUnit.MILLISECONDS);
-        } catch (ClosedWatchServiceException e) {
-          break;
-        } catch (Exception e) {
-          log.error("Error watching directory", e);
+        } catch (ClosedWatchServiceException e) { // Closed means the watcher is done: stop watching.
           break;
         }
 
@@ -676,6 +686,8 @@ public class MediaProcessingService {
 
         boolean dirAccessible = key.reset();
         if (!dirAccessible) {
+          // Not a failure: cleanup deletes chunks/ while this loop may still run. Mid-job, cleanup's
+          // sweep still finds every chunk this missed.
           log.warn("Work directory inaccessible. Stopping watcher.");
           break;
         }
@@ -687,31 +699,23 @@ public class MediaProcessingService {
         safeEnqueue(processContext, previousAudioChunk);
 
       log.info("Watcher stopped. Final chunks queued for upload");
-    } catch (Exception e) {
-      log.error("Error watching directory", e);
     }
   }
 
-  private void startUploadDispatcher(MediaProcessingContext processContext) {
+  private void startUploadDispatcher(MediaProcessingContext processContext) throws InterruptedException {
     while (processContext.getIsRunning().get() || !processContext.getUploadQueue().isEmpty()) {
-      try {
-        Path chunkPath = processContext.getUploadQueue().poll(1, TimeUnit.SECONDS);
-        if (chunkPath == null)
-          continue;
+      Path chunkPath = processContext.getUploadQueue().poll(1, TimeUnit.SECONDS);
+      if (chunkPath == null)
+        continue;
 
-        uploadSlots.acquire();
+      uploadSlots.acquire();
 
-        log.info("Uploading chunk: {}", chunkPath.getFileName());
+      log.info("Uploading chunk: {}", chunkPath.getFileName());
 
-        Thread.startVirtualThread(withMDC(() -> {
-          processContext.getChunkUploadStatusMap().put(chunkPath.toString(),
-              com.cortex.cortex_media_processing_service.service.processing.UploadStatus.IN_PROGRESS);
-          uploadWorker(processContext, chunkPath);
-        }));
-      } catch (Exception e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
+      Thread.startVirtualThread(BackgroundTask.of("upload worker", () -> {
+        processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.IN_PROGRESS);
+        uploadWorker(processContext, chunkPath);
+      }));
     }
   }
 
@@ -726,7 +730,7 @@ public class MediaProcessingService {
       log.info("Uploading chunk: {}", fileName);
 
       // Upload event for pipeline
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_STARTED).chunkIndex(index)
           .message(mediaType + " chunk upload started").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -735,7 +739,7 @@ public class MediaProcessingService {
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.UPLOADED);
 
       // Upload event for pipeline
-      kafkaTemplate.send(pipelineEventsTopic, fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
           .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -760,16 +764,16 @@ public class MediaProcessingService {
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
             .status(MediaChunk.Status.UPLOADED).userId(processContext.getUserId()).build());
 
-        kafkaTemplate.send(pipelineEventsTopic, fileId.toString(),
+        sendPipelineEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
                 .eventType(PipelineEventEnum.MEDIA_CHUNK_READY).chunkIndex(index)
                 .message("Media chunk ready for processing").metadata(Map.of("chunkId", chunk.getId())).build());
 
-        kafkaTemplate.send("media-chunk-uploaded",
+        KafkaSends.await(kafkaTemplate.send("media-chunk-uploaded",
             ChunkUploadedEventDTO.builder().chunkId(chunk.getId()).fileId(fileId).objectName(objectName)
                 .chunkIndex(index).start_s(chunkPair.getStart_s()).end_s(chunkPair.getEnd_s())
                 .videoPath(chunkPair.getVideoPath()).audioPath(chunkPair.getAudioPath())
-                .userId(processContext.getUserId()).build());
+                .userId(processContext.getUserId()).build()));
 
         processContext.getTotalChunks().incrementAndGet();
 
@@ -777,10 +781,14 @@ public class MediaProcessingService {
       }
 
       Files.deleteIfExists(chunkPath);
-    } catch (Exception e) {
-      log.error("Upload failed for {}", chunkPath, e);
+    } catch (Exception e) { // Carrying on: cleanup tries the chunk once more, and fails the job if that fails too.
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      log.warn("Upload failed for {}", chunkPath, e);
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.FAILED);
-      // Retry logic
+      processContext.getChunkUploadFailures().computeIfAbsent(chunkPath.toString(), key -> new CopyOnWriteArrayList<>())
+          .add(e);
     } finally {
       uploadSlots.release();
     }
@@ -798,68 +806,117 @@ public class MediaProcessingService {
     return workDir;
   }
 
-  private void cleanUpWorkingDir(MediaProcessingContext processContext) {
+  private void cleanUpWorkingDir(MediaProcessingContext processContext, List<Future<Void>> helpers) throws Exception {
     Path chunksDir = processContext.getWorkDir().resolve("chunks");
     log.info("Starting cleanup for chunks directory: {}", chunksDir);
 
-    try {
-      // 1. Sweep for any remaining chunks that weren't uploaded
-      try (var files = Files.list(chunksDir)) {
-        files.filter(path -> {
-          String name = path.getFileName().toString();
-          return name.endsWith(".mp4") || name.endsWith(".wav");
-        })
-            .filter(path -> {
-              String key = path.toString();
-              UploadStatus status = processContext.getChunkUploadStatusMap().get(key);
-              return status == null || status == UploadStatus.PENDING || status == UploadStatus.FAILED;
-            })
-            .forEach(path -> {
-              log.info("Found remaining chunk during cleanup: {}", path.getFileName());
-              safeEnqueue(processContext, path);
-            });
+    // 1. Sweep for any remaining chunks that weren't uploaded: the last ones, which the watcher
+    // never queues, and any that failed before ffmpeg ended (their one retry).
+    try (var files = Files.list(chunksDir)) {
+      files.filter(path -> {
+        String name = path.getFileName().toString();
+        return name.endsWith(".mp4") || name.endsWith(".wav");
+      })
+          .filter(path -> {
+            String key = path.toString();
+            UploadStatus status = processContext.getChunkUploadStatusMap().get(key);
+            return status == null || status == UploadStatus.PENDING || status == UploadStatus.FAILED;
+          })
+          .forEach(path -> {
+            log.info("Found remaining chunk during cleanup: {}", path.getFileName());
+            safeEnqueue(processContext, path);
+          });
+    }
+
+    // 2. Wait for the queue and the running uploads.
+    awaitUploads(processContext, helpers);
+
+    // 3. Retry sweep: queue again each chunk that failed once. Most failures come here, after the
+    // first sweep: ffmpeg takes seconds, the uploads minutes. Retried only now, after everything
+    // else has ended, to give the problem time to pass. A chunk with two causes has had its retry.
+    List<Path> failedOnce = processContext.getChunkUploadStatusMap().entrySet().stream()
+        .filter(entry -> entry.getValue() == UploadStatus.FAILED)
+        .filter(entry -> processContext.getChunkUploadFailures().getOrDefault(entry.getKey(), List.of()).size() == 1)
+        .map(entry -> Path.of(entry.getKey()))
+        .toList();
+    if (!failedOnce.isEmpty()) {
+      log.info("Retrying {} chunk(s) that failed once", failedOnce.size());
+      failedOnce.forEach(path -> safeEnqueue(processContext, path));
+      awaitUploads(processContext, helpers);
+    }
+
+    // 4. Verify all uploads completed successfully. A chunk still FAILED has had its retry: the
+    // file would complete without it, so the job fails instead.
+    rethrowIfFailed(helpers);
+    List<String> failedChunks = processContext.getChunkUploadStatusMap().entrySet().stream()
+        .filter(entry -> entry.getValue() == UploadStatus.FAILED)
+        .map(Map.Entry::getKey)
+        .sorted()
+        .toList();
+
+    if (!failedChunks.isEmpty()) {
+      // The first failure is the cause: a retry's is often only its consequence (the row already
+      // saved, so the retry hits the unique key).
+      List<Exception> causes = failedChunks.stream()
+          .flatMap(chunk -> processContext.getChunkUploadFailures().getOrDefault(chunk, List.of()).stream())
+          .toList();
+      IllegalStateException failure = new IllegalStateException(
+          failedChunks.size() + " chunk(s) failed to upload, after a retry: " + failedChunks,
+          causes.isEmpty() ? null : causes.get(0));
+      causes.stream().skip(1).forEach(failure::addSuppressed);
+      throw failure;
+    }
+
+    // 5. Delete the chunks directory recursively (NOT the parent workDir — the
+    // normalized playback file lives there and may still be in use by the
+    // normalization thread; the job's finally removes the parent after joining it).
+    try (var paths = Files.walk(chunksDir)) {
+      paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
+          .forEach(path -> {
+            try {
+              Files.deleteIfExists(path);
+            } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
+              log.warn("Failed to delete: {}", path, e);
+            }
+          });
+    }
+
+    log.info("Successfully cleaned up chunks directory: {}", chunksDir);
+  }
+
+  /** Waits until the upload queue is empty and every running upload has ended. */
+  private void awaitUploads(MediaProcessingContext processContext, List<Future<Void>> helpers) throws Exception {
+    // A dead dispatcher would never drain the queue: check for that.
+    while (!processContext.getUploadQueue().isEmpty()) {
+      rethrowIfFailed(helpers);
+      log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
+      log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
+      Thread.sleep(1000);
+    }
+
+    // shortcut: all semaphore slots free means every job's uploads have ended; correct while one
+    // file is processed at a time. A per-job count replaces it (per-job-upload-wait.md).
+    uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
+    uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+  }
+
+  /** get() on a finished helper throws its failure, if it had one. */
+  private static void rethrowIfFailed(List<Future<Void>> helpers) throws Exception {
+    for (Future<Void> helper : helpers) {
+      if (helper.isDone()) {
+        try {
+          helper.get();
+        } catch (ExecutionException e) {
+          // Unwrapped, as in KafkaSends: ExecutionException only says "the task failed". The cause is the failure.
+          if (e.getCause() instanceof Exception cause) {
+            throw cause;
+          }
+          if (e.getCause() instanceof Error error) {
+            throw error;
+          }
+          throw e;
+        }
       }
-
-      // 2. Wait for upload queue to drain
-      while (!processContext.getUploadQueue().isEmpty()) {
-        log.info("uploadqueue in cleanup: {}", processContext.getUploadQueue().toString());
-        log.info("Waiting for {} remaining uploads...", processContext.getUploadQueue().size());
-        Thread.sleep(1000);
-      }
-
-      // 3. Wait for all in-progress uploads to complete (all semaphore slots
-      // released)
-      uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
-      uploadSlots.release(MAX_CONCURRENT_UPLOADS);
-
-      // 4. Verify all uploads completed successfully
-      long failedCount = processContext.getChunkUploadStatusMap().values().stream()
-          .filter(status -> status == UploadStatus.FAILED)
-          .count();
-
-      if (failedCount > 0) {
-        log.warn("{} chunks failed to upload. Skipping directory deletion.", failedCount);
-        return;
-      }
-
-      // 5. Delete the chunks directory recursively (NOT the parent workDir — the
-      // normalized playback file lives there and may still be in use by the
-      // normalization thread; the parent is removed by the wait-for-both wiring).
-      try (var paths = Files.walk(chunksDir)) {
-        paths.sorted((a, b) -> b.compareTo(a)) // Reverse order: files before directories
-            .forEach(path -> {
-              try {
-                Files.deleteIfExists(path);
-              } catch (IOException e) {
-                log.warn("Failed to delete: {}", path, e);
-              }
-            });
-      }
-
-      log.info("Successfully cleaned up chunks directory: {}", chunksDir);
-
-    } catch (Exception e) {
-      log.error("Error during cleanup of working directory: {}", processContext.getWorkDir(), e);
     }
   }
 
@@ -871,11 +928,11 @@ public class MediaProcessingService {
           .forEach(path -> {
             try {
               Files.deleteIfExists(path);
-            } catch (IOException e) {
+            } catch (IOException e) { // Best effort: one file left in /tmp must not fail the job.
               log.warn("Failed to delete: {}", path, e);
             }
           });
-    } catch (IOException e) {
+    } catch (IOException e) { // Best effort, as above.
       log.warn("Failed to walk {} for deletion", dir, e);
     }
   }
@@ -889,6 +946,14 @@ public class MediaProcessingService {
     }
     processContext.getChunkUploadStatusMap().put(path.toString(), UploadStatus.PENDING);
     processContext.getUploadQueue().offer(path);
+  }
+
+  /**
+   * Waits for the broker: a failed send throws here and fails the job, or the
+   * thread it runs on (ADR-0014).
+   */
+  private void sendPipelineEvent(String key, PipelineEventDTO event) {
+    KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
   }
 
   private int extractChunkNumber(String fileName) {

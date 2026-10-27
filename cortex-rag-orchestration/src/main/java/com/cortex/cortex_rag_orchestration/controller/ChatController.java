@@ -24,6 +24,12 @@ import java.util.List;
 
 import org.springframework.ai.chat.messages.UserMessage;
 
+/**
+ * @deprecated The chat endpoints from before conversations. Nothing in the frontend calls them;
+ *     the real path is {@link ConversationController}. Left out of ADR-0014's boundary work and
+ *     kept until it is deleted.
+ */
+@Deprecated
 @Slf4j
 @RestController
 @RequiredArgsConstructor
@@ -34,6 +40,7 @@ public class ChatController {
 
   private final AgentService agentService;
 
+  @Deprecated
   @PostMapping()
   public ResponseEntity<ChatAnswerDTO> chat(@Valid @RequestBody ChatQuestionDTO question,
       Authentication authentication) {
@@ -45,6 +52,7 @@ public class ChatController {
     return ResponseEntity.ok(answer);
   }
 
+  @Deprecated
   @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter streamChat(@Valid @RequestBody ChatQuestionDTO question, Authentication authentication) {
     String userId = authentication.getName();

@@ -25,27 +25,19 @@ public class UserGrpcService extends UserServiceImplBase {
   public void syncUser(SyncUserRequest request, StreamObserver<SyncUserResponse> responseObserver) {
     log.info("[UserGrpcService] Received gRPC request to sync user: {}", request.getEmail());
 
-    try {
-      User user = userRepository.findById(request.getId()).orElseGet(() -> User.builder()
-          .id(request.getId())
-          .email(request.getEmail())
-          .name(request.getName())
-          .pictureUrl(request.getPictureUrl())
-          .build());
+    User user = userRepository.findById(request.getId()).orElseGet(() -> User.builder()
+        .id(request.getId())
+        .email(request.getEmail())
+        .name(request.getName())
+        .pictureUrl(request.getPictureUrl())
+        .build());
 
-      userRepository.save(user);
+    userRepository.save(user);
 
-      SyncUserResponse response = SyncUserResponse.newBuilder().setSuccess(true).setMessage("User synced successfully")
-          .build();
+    SyncUserResponse response = SyncUserResponse.newBuilder().setSuccess(true).setMessage("User synced successfully")
+        .build();
 
-      responseObserver.onNext(response);
-      responseObserver.onCompleted();
-    } catch (Exception e) {
-      log.error("[UserGrpcService] Error syncing user: {}", e);
-      responseObserver.onError(io.grpc.Status.INTERNAL
-          .withDescription("Error during user sync")
-          .withCause(e)
-          .asRuntimeException());
-    }
+    responseObserver.onNext(response);
+    responseObserver.onCompleted();
   }
 }

@@ -79,112 +79,100 @@ public class GcsStorageService {
     String objectName = "uploads/media/" + UUID.randomUUID().toString() + extension;
     log.info("[GCSService] Generated objectName: {}", objectName);
 
-    try {
-      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
-          .setContentType(contentType)
-          .build();
+    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
+        .setContentType(contentType)
+        .build();
 
-      long expirationTime = 30;
+    long expirationTime = 30;
 
-      URL url = storage.signUrl(blobInfo, expirationTime, TimeUnit.MINUTES,
-          Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
-          Storage.SignUrlOption.withExtHeaders(Map.of("Content-Type", contentType)),
-          Storage.SignUrlOption.withV4Signature());
-      log.info("[GCSService] Generated presigned URL: {}", url);
+    URL url = storage.signUrl(blobInfo, expirationTime, TimeUnit.MINUTES,
+        Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
+        Storage.SignUrlOption.withExtHeaders(Map.of("Content-Type", contentType)),
+        Storage.SignUrlOption.withV4Signature());
+    log.info("[GCSService] Generated presigned URL: {}", url);
 
-      FileMetadata fileMetadata = fileMetadataRepository
-          .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
-              .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).userId(userId)
-              .build());
-      MDC.put("fileId", fileMetadata.getId().toString());
-      log.info("[GCSService] Saved file metadata: {}", fileMetadata);
+    FileMetadata fileMetadata = fileMetadataRepository
+        .save(FileMetadata.builder().fileDisplayName(originalFileName).fileSize(safeSize).objectName(objectName)
+            .bucketName(bucketName).fileStatus(FileStatusEnum.PENDING).contentType(contentType).userId(userId)
+            .build());
+    MDC.put("fileId", fileMetadata.getId().toString());
+    log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
-      return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
-          .expiresIn(LocalDateTime.now().plusMinutes(expirationTime)).build();
-
-    } catch (Exception e) {
-      log.error("[GCSService] Error generating presigned URL: {}", e.getMessage());
-      throw new RuntimeException("Error generating presigned URL", e);
-    } finally {
-      MDC.remove("fileId");
-    }
+    return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
+        .expiresIn(LocalDateTime.now().plusMinutes(expirationTime)).build();
   }
 
+  /**
+   * The webhook's work. An object that can never be processed throws a 404; the webhook answers it
+   * 200 so Pub/Sub stops sending it. Anything else propagates and is a 500, which Pub/Sub retries.
+   */
   public void handleFileUploadSuccess(String objectName) {
-    try {
-      String decodedObjectName = URLDecoder.decode(objectName, StandardCharsets.UTF_8);
+    String decodedObjectName = URLDecoder.decode(objectName, StandardCharsets.UTF_8);
 
-      FileMetadata fileMetadata = fileMetadataRepository.findByObjectName(decodedObjectName).orElseThrow(() -> {
-        log.error("[GCSService] File metadata not found for objectName: {}", decodedObjectName);
-        return new RuntimeException("File metadata not found for objectName: " + decodedObjectName);
-      });
+    FileMetadata fileMetadata = fileMetadataRepository.findByObjectName(decodedObjectName)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+            "No file for object " + decodedObjectName));
 
-      MDC.put("fileId", fileMetadata.getId().toString());
+    MDC.put("fileId", fileMetadata.getId().toString());
 
-      Blob blob = storage.get(BlobId.of(bucketName, decodedObjectName),
-          Storage.BlobGetOption.fields(Storage.BlobField.SIZE));
+    Blob blob = storage.get(BlobId.of(bucketName, decodedObjectName),
+        Storage.BlobGetOption.fields(Storage.BlobField.SIZE));
 
-      if (blob == null) {
-        log.error("[GCSService] Object not found in GCS for objectName: {}", decodedObjectName);
-        throw new RuntimeException("Object not found in GCS for objectName: " + decodedObjectName);
-      }
+    // Deleted by the user, or rejected as too big, before this notification came.
+    if (blob == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Object no longer in GCS: " + decodedObjectName);
+    }
 
-      long actualSize = blob.getSize();
+    long actualSize = blob.getSize();
 
-      if (actualSize <= maxFileBytes) {
-        fileMetadata.setFileSize(actualSize);
-      } else {
-        deleteObject(decodedObjectName, fileMetadata.getId());
-        fileMetadata.setFileSize(actualSize);
-        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-        fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_BIG);
-        fileMetadataRepository.save(fileMetadata);
-        log.error("[GCSService] File too big: {}", decodedObjectName);
-
-        PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
-            .eventType(PipelineEventEnum.UPLOAD_REJECTED)
-            .message(
-                "File is too large to be processed, please upload a file smaller than " + (maxFileBytes / 1024 / 1024)
-                    + " MB. This file with size " + (fileMetadata.getFileSize() / 1024 / 1024) + " MB will be deleted.")
-            .metadata(Map.of(
-                "contentType", fileMetadata.getContentType(),
-                "fileSize", actualSize,
-                "objectName", fileMetadata.getObjectName(),
-                "bucketName", fileMetadata.getBucketName(),
-                "fileStatus", fileMetadata.getFileStatus().toString()))
-            .build();
-
-        kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
-        return;
-      }
-
-      fileMetadata.setFileStatus(FileStatusEnum.UPLOADED);
+    if (actualSize <= maxFileBytes) {
+      fileMetadata.setFileSize(actualSize);
+    } else {
+      deleteObject(decodedObjectName, fileMetadata.getId());
+      fileMetadata.setFileSize(actualSize);
+      fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
+      fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_BIG);
       fileMetadataRepository.save(fileMetadata);
-      log.info("[GCSService] Updated file metadata: {}", fileMetadata);
-
-      FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(fileMetadata.getId())
-          .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(fileMetadata.getFileSize())
-          .fileStatus(fileMetadata.getFileStatus().toString()).userId(fileMetadata.getUserId()).build();
+      // WARN: a rejected upload is the user's input, not our failure.
+      log.warn("[GCSService] File too big: {}", decodedObjectName);
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
-          .eventType(PipelineEventEnum.PIPELINE_STARTED).message("File uploaded successfully").metadata(Map.of(
+          .eventType(PipelineEventEnum.UPLOAD_REJECTED)
+          .message(
+              "File is too large to be processed, please upload a file smaller than " + (maxFileBytes / 1024 / 1024)
+                  + " MB. This file with size " + (fileMetadata.getFileSize() / 1024 / 1024) + " MB will be deleted.")
+          .metadata(Map.of(
               "contentType", fileMetadata.getContentType(),
-              "fileSize", fileMetadata.getFileSize(),
+              "fileSize", actualSize,
               "objectName", fileMetadata.getObjectName(),
               "bucketName", fileMetadata.getBucketName(),
               "fileStatus", fileMetadata.getFileStatus().toString()))
           .build();
 
-      kafkaProducerService.sendFileIngestedEvent(event);
       kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
-      log.info("[GCSService] Sent file upload success event: {}", event);
-
-    } catch (Exception e) {
-      log.error("[GCSService] Error sending file upload success event for objectName: {}", objectName, e);
-      throw new RuntimeException("Error sending file uploPlad success event for objectName: " + objectName, e);
-    } finally {
-      MDC.remove("fileId");
+      return;
     }
+
+    fileMetadata.setFileStatus(FileStatusEnum.UPLOADED);
+    fileMetadataRepository.save(fileMetadata);
+    log.info("[GCSService] Updated file metadata: {}", fileMetadata);
+
+    FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(fileMetadata.getId())
+        .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(fileMetadata.getFileSize())
+        .fileStatus(fileMetadata.getFileStatus().toString()).userId(fileMetadata.getUserId()).build();
+
+    PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
+        .eventType(PipelineEventEnum.PIPELINE_STARTED).message("File uploaded successfully").metadata(Map.of(
+            "contentType", fileMetadata.getContentType(),
+            "fileSize", fileMetadata.getFileSize(),
+            "objectName", fileMetadata.getObjectName(),
+            "bucketName", fileMetadata.getBucketName(),
+            "fileStatus", fileMetadata.getFileStatus().toString()))
+        .build();
+
+    kafkaProducerService.sendFileIngestedEvent(event);
+    kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
+    log.info("[GCSService] Sent file upload success event: {}", event);
   }
 
   public void deleteObject(String objectName, UUID fileId) {
@@ -221,19 +209,13 @@ public class GcsStorageService {
 
     String playbackObject = fileMetadata.getPlaybackObjectName();
 
-    try {
-      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
-      URL url = storage.signUrl(blobInfo, playbackUrlExpiryHours, TimeUnit.HOURS,
-          Storage.SignUrlOption.httpMethod(HttpMethod.GET), Storage.SignUrlOption.withV4Signature());
+    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, playbackObject)).build();
+    URL url = storage.signUrl(blobInfo, playbackUrlExpiryHours, TimeUnit.HOURS,
+        Storage.SignUrlOption.httpMethod(HttpMethod.GET), Storage.SignUrlOption.withV4Signature());
 
-      Instant expiresAt = Instant.now().plus(Duration.ofHours(playbackUrlExpiryHours));
+    Instant expiresAt = Instant.now().plus(Duration.ofHours(playbackUrlExpiryHours));
 
-      return PlaybackUrlResponseDTO.builder().playbackUrl(url.toString()).expiresAt(expiresAt)
-          .hasVideo(fileMetadata.getHasVideo()).build();
-
-    } catch (Exception e) {
-      log.error("[GCSService] Error getting playback url for fileId : {}", fileId, e);
-      throw new RuntimeException("Error getting playback url for fileId : " + fileId + " : " + e);
-    }
+    return PlaybackUrlResponseDTO.builder().playbackUrl(url.toString()).expiresAt(expiresAt)
+        .hasVideo(fileMetadata.getHasVideo()).build();
   }
 }

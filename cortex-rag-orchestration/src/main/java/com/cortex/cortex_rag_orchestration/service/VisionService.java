@@ -57,21 +57,15 @@ public class VisionService {
       """;
 
   public String generateDescription(String videoPath) {
+    String gcsUri = String.format("gs://%s/%s", bucketName, videoPath);
 
-    try {
-      String gcsUri = String.format("gs://%s/%s", bucketName, videoPath);
+    log.info("Generating description for video: {}", gcsUri);
 
-      log.info("Generating description for video: {}", gcsUri);
+    inferenceRateLimiter.acquire();
 
-      inferenceRateLimiter.acquire();
+    GenerateContentResponse response = genAiClient.models.generateContent(MODEL_NAME,
+        Content.fromParts(Part.fromUri(gcsUri, "video/mp4"), Part.fromText(VIDEO_ANALYSIS_PROMPT)), null);
 
-      GenerateContentResponse response = genAiClient.models.generateContent(MODEL_NAME,
-          Content.fromParts(Part.fromUri(gcsUri, "video/mp4"), Part.fromText(VIDEO_ANALYSIS_PROMPT)), null);
-
-      return response.text();
-    } catch (Exception e) {
-      log.error("Error generating description for video: {}", videoPath, e);
-      throw new RuntimeException("Error generating description for video: " + videoPath, e);
-    }
+    return response.text();
   }
 }

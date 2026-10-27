@@ -95,7 +95,7 @@ class CitationNumberer {
   private UUID toUuid(String cite) {
     try {
       return UUID.fromString(cite);
-    } catch (IllegalArgumentException | NullPointerException e) {
+    } catch (IllegalArgumentException | NullPointerException e) { // Not a UUID: matches nothing; dropped() reports it.
       return null;
     }
   }

@@ -1,5 +1,6 @@
 package com.cortex.cortex_ingestion.service;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -44,7 +45,7 @@ public class PipelineEventsService {
 
   private final ObjectMapper objectMapper;
 
-  public SseEmitter subscribeToEvents(UUID fileId, String userId) {
+  public SseEmitter subscribeToEvents(UUID fileId, String userId) throws IOException {
     log.info("[PipelineEventsService] Client subscribed to events for fileId: {}", fileId);
 
     FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
@@ -67,28 +68,28 @@ public class PipelineEventsService {
     return emitter;
   }
 
-  private void sendPreviousEvents(UUID fileId, SseEmitter emitter) {
+  /**
+   * Sent before the endpoint returns, so Spring buffers them: a client can't have left yet. What
+   * can fail is stored metadata that won't read, and that is a 500 at the boundary.
+   */
+  private void sendPreviousEvents(UUID fileId, SseEmitter emitter) throws IOException {
     List<PipelineEvent> historicalEvents = pipelineEventRepository.findByFileIdOrderByCreatedAtAsc(fileId);
 
     for (PipelineEvent event : historicalEvents) {
-      try {
-        Map<String, Object> eventMap = event.getMetadata() != null
-            ? objectMapper.readValue(event.getMetadata(), new TypeReference<>() {
-            })
-            : Map.of();
+      Map<String, Object> eventMap = event.getMetadata() != null
+          ? objectMapper.readValue(event.getMetadata(), new TypeReference<>() {
+          })
+          : Map.of();
 
-        PipelineEventDTO eventDTO = PipelineEventDTO.builder().fileId(event.getFileId())
-            .chunkId(event.getChunkId())
-            .chunkIndex(event.getChunkIndex())
-            .eventType(event.getEventType())
-            .message(event.getMessage())
-            .metadata(eventMap)
-            .build();
+      PipelineEventDTO eventDTO = PipelineEventDTO.builder().fileId(event.getFileId())
+          .chunkId(event.getChunkId())
+          .chunkIndex(event.getChunkIndex())
+          .eventType(event.getEventType())
+          .message(event.getMessage())
+          .metadata(eventMap)
+          .build();
 
-        emitter.send(SseEmitter.event().name(event.getEventType().name()).data(eventDTO));
-      } catch (Exception e) {
-        log.error("Failed to send historical event for fileId {}", fileId, e);
-      }
+      emitter.send(SseEmitter.event().name(event.getEventType().name()).data(eventDTO));
     }
   }
 
@@ -126,9 +127,9 @@ public class PipelineEventsService {
       }
 
     } catch (JsonProcessingException e) {
-      log.error("Failed to process new event for fileId {}", eventDTO.getFileId(), e);
+      // Re-thrown unchecked: @Transactional rolls back only on those, and the Kafka handler reports it.
+      throw new IllegalStateException("Could not process pipeline event for fileId " + eventDTO.getFileId(), e);
     }
-
   }
 
   private void checkPipelineCompletion(UUID fileId) throws JsonProcessingException {

@@ -6,6 +6,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.utils.BackgroundTask;
 import com.cortex.cortex_media_processing_service.service.MediaProcessingService;
 
 import lombok.RequiredArgsConstructor;
@@ -25,10 +26,13 @@ public class MediaEventConsumer {
     MDC.put("fileId", event.getFileId().toString());
     try {
       log.info("Received file ingestion event for fileId: {}", event.getFileId());
-      mediaProcessingExecutor.execute(() -> mediaProcessingService.processMedia(
+      // Handed off, never waited on: a job runs 15-40 minutes, far past max.poll.interval.ms, and
+      // a listener that blocks that long gets evicted and the record redelivered (ADR-0014). The
+      // job's failures end at its own boundary, BackgroundTask, not here.
+      mediaProcessingExecutor.execute(BackgroundTask.of("media job", () -> mediaProcessingService.processMedia(
           event.getObjectName(),
           event.getFileId(),
-          event.getUserId()));
+          event.getUserId())));
     } finally {
       MDC.remove("fileId");
     }

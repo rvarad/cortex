@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.KafkaSends;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 
 import lombok.RequiredArgsConstructor;
@@ -47,7 +48,7 @@ public class OrchestrationService {
     MDC.put("fileId", event.getFileId().toString());
     try {
       if (event.getVideoPath() != null && !event.getVideoPath().isEmpty()) {
-        kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
+        sendPipelineEvent(event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                 .chunkIndex(event.getChunkIndex())
                 .eventType(PipelineEventEnum.VISION_ANALYSIS_STARTED)
@@ -59,7 +60,7 @@ public class OrchestrationService {
             try {
               MDC.put("fileId", event.getFileId().toString());
               String visionDescription = visionService.generateDescription(event.getVideoPath());
-              kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
+              sendPipelineEvent(event.getFileId().toString(),
                   PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                       .chunkIndex(event.getChunkIndex())
                       .eventType(PipelineEventEnum.VISION_ANALYSIS_COMPLETE)
@@ -73,7 +74,7 @@ public class OrchestrationService {
           : CompletableFuture.completedFuture("");
 
       if (event.getAudioPath() != null && !event.getAudioPath().isEmpty()) {
-        kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
+        sendPipelineEvent(event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                 .chunkIndex(event.getChunkIndex())
                 .eventType(PipelineEventEnum.TRANSCRIPTION_STARTED)
@@ -87,7 +88,7 @@ public class OrchestrationService {
                   MDC.put("fileId", event.getFileId().toString());
                   TranscriptionService.TranscriptionResult transcriptionResult = transcriptionService
                       .transcribe(event.getAudioPath());
-                  kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
+                  sendPipelineEvent(event.getFileId().toString(),
                       PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                           .chunkIndex(event.getChunkIndex())
                           .eventType(PipelineEventEnum.TRANSCRIPTION_COMPLETE)
@@ -123,7 +124,7 @@ public class OrchestrationService {
           }, executorService)
           .get(EMBED_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
-      kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(),
+      sendPipelineEvent(event.getFileId().toString(),
           PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
               .chunkIndex(event.getChunkIndex())
               .eventType(PipelineEventEnum.EMBEDDING_COMPLETE).message("Embedding complete")
@@ -136,5 +137,13 @@ public class OrchestrationService {
     } finally {
       MDC.remove("fileId");
     }
+  }
+
+  /**
+   * Waits for the broker: a failed send throws here and fails the record
+   * (ADR-0014).
+   */
+  private void sendPipelineEvent(String key, PipelineEventDTO event) {
+    KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
   }
 }

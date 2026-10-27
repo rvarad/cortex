@@ -3,6 +3,7 @@ package com.cortex.cortex_rag_orchestration.service;
 import com.cortex.cortex_common.dto.AgentAnswerDTO;
 import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.cortex.cortex_common.dto.SourceRefDTO;
+import com.cortex.cortex_rag_orchestration.util.SegmentParseException;
 import com.cortex.cortex_rag_orchestration.util.SegmentParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,13 +12,13 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;
@@ -80,12 +81,18 @@ public class AgentService {
    */
   private static final int MAX_ITERATIONS = 5;
 
-  /** Shared by every call so the final answer at the cap is made the same way as any other. */
+  /**
+   * Shared by every call so the final answer at the cap is made the same way as
+   * any other.
+   */
   private static final double TEMPERATURE = 0.3;
 
   private static final String GAVE_UP = "I wasn't able to finish looking into that. Please try asking more specifically.";
 
-  /** Sent at the cap, with the tools taken away, so the turn ends in an answer rather than nothing. */
+  /**
+   * Sent at the cap, with the tools taken away, so the turn ends in an answer
+   * rather than nothing.
+   */
   private static final String ANSWER_NOW = """
       You've used all the searches available for this question. Answer now, using only what's \
       already in front of you: the conversation, any attached files, and the tool results above. If \
@@ -424,7 +431,8 @@ public class AgentService {
   }
 
   /**
-   * One last call, with no tools declared, so the model has to answer from what it
+   * One last call, with no tools declared, so the model has to answer from what
+   * it
    * already gathered instead of the turn ending with nothing (plan §8.9).
    *
    * <p>
@@ -473,39 +481,45 @@ public class AgentService {
     StringBuilder raw = new StringBuilder();
     boolean parseFailed = false;
 
-    for (ChatResponse response : chatModel.stream(prompt).toIterable()) {
+    // A Stream, not toIterable(): closing it cancels the request. So when a send
+    // fails because the
+    // client left, the exception leaves this loop and stops the model, not only our
+    // reading of it.
+    try (Stream<ChatResponse> responses = chatModel.stream(prompt).toStream()) {
+      for (ChatResponse response : (Iterable<ChatResponse>) responses::iterator) {
 
-      if (response.getResult() == null) {
-        continue;
-      }
+        if (response.getResult() == null) {
+          continue;
+        }
 
-      if (response.hasToolCalls()) {
-        // Gemini sends a function call as one complete chunk, never in fragments (§11
-        // V4).
-        toolCall = response;
-        continue;
-      }
+        if (response.hasToolCalls()) {
+          // Gemini sends a function call as one complete chunk, never in fragments (§11
+          // V4).
+          toolCall = response;
+          continue;
+        }
 
-      String piece = response.getResult().getOutput().getText();
+        String piece = response.getResult().getOutput().getText();
 
-      if (piece == null || piece.isEmpty()) {
-        continue;
-      }
+        if (piece == null || piece.isEmpty()) {
+          continue;
+        }
 
-      raw.append(piece);
+        raw.append(piece);
 
-      if (parseFailed) {
-        continue;
-      }
+        if (parseFailed) {
+          continue;
+        }
 
-      try {
-        parser.feed(piece);
-      } catch (Exception e) {
-        // Degrade rather than drop the answer: stop parsing, keep collecting, and hand
-        // over
-        // whatever arrived as one uncited segment below.
-        log.warn("[agent] streamed answer was not the expected JSON; sending it uncited", e);
-        parseFailed = true;
+        try {
+          parser.feed(piece);
+        } catch (SegmentParseException e) {
+          // Degrade rather than drop the answer: stop parsing, keep collecting, and hand
+          // over
+          // whatever arrived as one uncited segment below.
+          log.warn("[agent] streamed answer was not the expected JSON; sending it uncited", e);
+          parseFailed = true;
+        }
       }
     }
 
@@ -536,9 +550,11 @@ public class AgentService {
    * <em>is</em> widening beyond them.
    *
    * <p>
-   * Only reading and searching are shown. Anything else — looking back through the
+   * Only reading and searching are shown. Anything else — looking back through
+   * the
    * conversation included — is the model working out its answer, and the user
-   * sees "Thinking…" for it, which the frontend shows whenever no step is running.
+   * sees "Thinking…" for it, which the frontend shows whenever no step is
+   * running.
    */
   private Optional<String> stepLabel(ToolCall call, boolean hasAttachments) {
     return switch (call.name()) {
@@ -628,7 +644,7 @@ public class AgentService {
     try {
       return objectMapper.readValue(json, new TypeReference<List<RawSegment>>() {
       });
-    } catch (Exception e) {
+    } catch (Exception e) { // null = not our shape: the caller keeps the answer, uncited.
       log.warn("[agent] answer was not the expected JSON; returning it uncited. Text: {}", json, e);
       return null;
     }

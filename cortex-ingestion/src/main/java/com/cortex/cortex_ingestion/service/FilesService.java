@@ -5,10 +5,12 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
@@ -32,74 +34,54 @@ public class FilesService {
   private final GcsStorageService gcsStorageService;
 
   public List<FileResponseDTO> getAllFiles(String userId) {
-    try {
-      List<FileResponseDTO> fileMetadataList = fileMetadataRepository.findAllByUserId(userId).stream()
-          .map((FileMetadata file) -> {
-            return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
-                .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
-                .durationSeconds(file.getDurationSeconds())
-                .fileStatus(file.getFileStatus().name())
-                .rejectionReason(file.getRejectionReason() != null ? file.getRejectionReason().name() : null)
-                .playbackStatus(file.getPlaybackStatus() != null ? file.getPlaybackStatus().name() : null)
-                .build();
-          }).collect(Collectors.toList());
-
-      return fileMetadataList;
-    } catch (Exception e) {
-      log.error("[FilesService] Error getting all files: {}", e.getMessage());
-      throw new RuntimeException("Error getting all files", e);
-    }
+    return fileMetadataRepository.findAllByUserId(userId).stream()
+        .map((FileMetadata file) -> {
+          return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
+              .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
+              .durationSeconds(file.getDurationSeconds())
+              .fileStatus(file.getFileStatus().name())
+              .rejectionReason(file.getRejectionReason() != null ? file.getRejectionReason().name() : null)
+              .playbackStatus(file.getPlaybackStatus() != null ? file.getPlaybackStatus().name() : null)
+              .build();
+        }).collect(Collectors.toList());
   }
 
   @Transactional
   public void deleteFile(UUID fileId, String userId) {
-    try {
-      FileMetadata metadata = fileMetadataRepository.findByIdAndUserId(fileId, userId).orElseThrow(() -> {
-        log.error("[FileService] File Metadata not found for fileId: {}", fileId);
-        throw new RuntimeException("File not found for fileId: " + fileId);
-      });
+    FileMetadata metadata = fileMetadataRepository.findByIdAndUserId(fileId, userId)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
 
-      String objectName = metadata.getObjectName();
+    String objectName = metadata.getObjectName();
 
-      mediaChunkRepository.deleteAllByFileId(fileId);
-      fileMetadataRepository.delete(metadata);
-      pipelineEventRepository.deleteAllByFileId(fileId);
+    mediaChunkRepository.deleteAllByFileId(fileId);
+    fileMetadataRepository.delete(metadata);
+    pipelineEventRepository.deleteAllByFileId(fileId);
 
-      log.info("[FilesService] DB records for fileId: {} queued for deletion", fileId);
+    log.info("[FilesService] DB records for fileId: {} queued for deletion", fileId);
 
-      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-        @Override
-        public void afterCommit() {
-          try {
-            gcsStorageService.deleteObject(objectName, fileId);
-            log.info("[FilesService] Successfully deleted GCS objects for fileId: {}, objectName: {}", fileId,
-                objectName);
-          } catch (Exception e) {
-            log.error("[FilesService] Failed to delete GCS objects for fileId: {}, objectName: {}", fileId,
-                objectName, e);
-          }
+    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+      @Override
+      public void afterCommit() {
+        try {
+          gcsStorageService.deleteObject(objectName, fileId);
+          log.info("[FilesService] Successfully deleted GCS objects for fileId: {}, objectName: {}", fileId,
+              objectName);
+        } catch (Exception e) { // After commit: the rows are gone, so this can only be logged; the objects stay.
+          log.error("[FilesService] Failed to delete GCS objects for fileId: {}, objectName: {}", fileId,
+              objectName, e);
         }
-      });
-
-    } catch (Exception e) {
-      log.error("[FilesService] Error deleting file: {}", e.getMessage());
-      throw new RuntimeException("Error deleting file", e);
-    }
+      }
+    });
   }
 
   @Transactional
   public void updateFileDisplayName(UUID fileId, String newDisplayName, String userId) {
-    try {
-      FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
-          .orElseThrow(() -> new RuntimeException("File not found for fileId: " + fileId));
+    FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
 
-      file.setFileDisplayName(newDisplayName);
-      fileMetadataRepository.save(file);
+    file.setFileDisplayName(newDisplayName);
+    fileMetadataRepository.save(file);
 
-      log.info("[FilesService] Successfully updated display name for fileId: {} to '{}'", fileId, newDisplayName);
-    } catch (Exception e) {
-      log.error("[FilesService] Error updating file display name: {}", e.getMessage());
-      throw new RuntimeException("Error updating file display name", e);
-    }
+    log.info("[FilesService] Successfully updated display name for fileId: {} to '{}'", fileId, newDisplayName);
   }
 }
