@@ -17,7 +17,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +39,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 
 /**
@@ -149,56 +147,6 @@ class MediaJobBoundaryTest {
   }
 
   @Test
-  void aFailedSend_failsTheJobAtItsBoundary_beforeAnyMediaWork() throws Exception {
-    // ---- Arrange: the job gets as far as its first send, PROBE_STARTED, and the broker is away ----
-    UUID fileId = UUID.randomUUID();
-    // Port 9 refuses connections at once: if the job wrongly carried on to ffprobe, it would fail
-    // fast instead of hanging the test.
-    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn("http://127.0.0.1:9/media.mp4");
-    FileMetadata file = FileMetadata.builder()
-        .id(fileId)
-        .fileDisplayName("talk.mp4")
-        .bucketName("cortex-dev-bucket")
-        .objectName("uploads/media/" + fileId + ".mp4")
-        .fileSize(1_000L)
-        .fileStatus(FileStatusEnum.UPLOADED)
-        .contentType("video/mp4")
-        .userId("user-1")
-        .build();
-    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(file));
-    when(kafkaTemplate.send(any(), any(), any()))
-        .thenAnswer(invocation -> CompletableFuture.failedFuture(new KafkaException("broker unreachable")));
-
-    // ---- Act ----
-    consumer.consume(FileIngestionEventDTO.builder()
-        .fileId(fileId)
-        .objectName("uploads/media/" + fileId + ".mp4")
-        .userId("user-1")
-        .build());
-
-    ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
-    pool.shutdown();
-    assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).as("the job finished").isTrue();
-
-    // ---- Assert ----
-    List<ILoggingEvent> errors = captured.list.stream()
-        .filter(logged -> logged.getLevel() == Level.ERROR)
-        .toList();
-
-    // The job must fail on the send itself. If the send were ignored, the job would carry on to
-    // ffprobe and fail there instead, with nothing in the log about Kafka.
-    assertThat(errors).as("ERROR lines from our code").isNotEmpty();
-    assertThat(causeChainContains(errors.get(errors.size() - 1).getThrowableProxy(), "broker unreachable"))
-        .as("the job failed because the send failed").isTrue();
-
-    assertThat(errors).as("ERROR lines from our code").hasSize(1);
-    ILoggingEvent error = errors.get(0);
-    assertThat(error.getLoggerName()).as("logged by the boundary").isEqualTo(BackgroundTask.class.getName());
-    assertThat(error.getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
-    assertThat(escaped.get()).as("nothing escapes onto the pool thread").isNull();
-  }
-
-  @Test
   void aFailedProbe_isLoggedOnce_atTheJobsBoundary() throws Exception {
     // ---- Arrange: every send works; ffprobe can't read the file ----
     // With ffprobe installed it exits non-zero on port 9's refused connection; without it, starting
@@ -280,15 +228,5 @@ class MediaJobBoundaryTest {
         .contentType("video/mp4")
         .userId("user-1")
         .build();
-  }
-
-  /** The logged exception may be a wrapper; the original is somewhere in its causes. */
-  private static boolean causeChainContains(IThrowableProxy proxy, String message) {
-    for (IThrowableProxy current = proxy; current != null; current = current.getCause()) {
-      if (message.equals(current.getMessage())) {
-        return true;
-      }
-    }
-    return false;
   }
 }

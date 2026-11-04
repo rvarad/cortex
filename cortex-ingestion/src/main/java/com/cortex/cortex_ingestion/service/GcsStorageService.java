@@ -149,7 +149,7 @@ public class GcsStorageService {
               "fileStatus", fileMetadata.getFileStatus().toString()))
           .build();
 
-      kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
+      kafkaProducerService.sendGlassBoxEvent(pipelineEventDTO);
       return;
     }
 
@@ -171,7 +171,7 @@ public class GcsStorageService {
         .build();
 
     kafkaProducerService.sendFileIngestedEvent(event);
-    kafkaProducerService.sendPipelineEvent(pipelineEventDTO);
+    kafkaProducerService.sendGlassBoxEvent(pipelineEventDTO);
     log.info("[GCSService] Sent file upload success event: {}", event);
   }
 

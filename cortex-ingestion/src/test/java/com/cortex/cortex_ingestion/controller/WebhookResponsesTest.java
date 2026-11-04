@@ -2,7 +2,9 @@ package com.cortex.cortex_ingestion.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -11,18 +13,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
+import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.MediaType;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import com.cortex.cortex_common.dto.FileIngestionEventDTO;
+import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
@@ -30,6 +37,7 @@ import com.cortex.cortex_ingestion.exception.ApiExceptionHandler;
 import com.cortex.cortex_ingestion.logging.MdcCleanupFilter;
 import com.cortex.cortex_ingestion.service.GcsStorageService;
 import com.cortex.cortex_ingestion.service.KafkaProducerService;
+import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
@@ -52,6 +60,8 @@ class WebhookResponsesTest {
 
   private static final String OBJECT_NAME = "uploads/media/talk.mp4";
 
+  private static final String MEDIA_TOPIC = "cortex.file.ingested.media";
+
   /** Every logger of ours sits under "com.cortex", so this sees all of our lines. */
   private final Logger cortexLogger = (Logger) LoggerFactory.getLogger("com.cortex");
 
@@ -68,7 +78,10 @@ class WebhookResponsesTest {
 
   private final FileMetadataRepository fileMetadataRepository = mock(FileMetadataRepository.class);
 
-  private final KafkaProducerService kafkaProducerService = mock(KafkaProducerService.class);
+  @SuppressWarnings("unchecked")
+  private final KafkaTemplate<String, Object> kafkaTemplate = mock(KafkaTemplate.class);
+
+  private final KafkaProducerService kafkaProducerService = new KafkaProducerService(kafkaTemplate);
 
   private final GcsStorageService gcsStorageService = new GcsStorageService(
       storage, fileMetadataRepository, kafkaProducerService);
@@ -81,7 +94,12 @@ class WebhookResponsesTest {
 
   @BeforeEach
   void setUp() {
+    // Normally injected from application.properties.
     ReflectionTestUtils.setField(gcsStorageService, "bucketName", "cortex-dev-bucket");
+    ReflectionTestUtils.setField(gcsStorageService, "maxFileBytes", 1_000_000L);
+    ReflectionTestUtils.setField(kafkaProducerService, "mediaTopic", MEDIA_TOPIC);
+    ReflectionTestUtils.setField(kafkaProducerService, "documentTopic", "cortex.file.ingested.document");
+    ReflectionTestUtils.setField(kafkaProducerService, "pipelineEventsTopic", "cortex.pipeline.events");
     captured.start();
     cortexLogger.addAppender(captured);
   }
@@ -99,7 +117,30 @@ class WebhookResponsesTest {
     mockMvc.perform(pushFor(OBJECT_NAME)).andExpect(status().isOk());
 
     assertThat(linesAt(Level.ERROR)).as("ERROR lines").hasSize(1);
-    verifyNoInteractions(kafkaProducerService);
+    verifyNoInteractions(kafkaTemplate);
+  }
+
+  @Test
+  void aFailedPipelineStartedSend_isOneWarn_andTheWebhookStillAnswers200_afterTheFileIngestionEvent()
+      throws Exception {
+    // ---- Arrange: the upload is fine; only the glass box event can't be sent ----
+    UUID fileId = UUID.randomUUID();
+    when(fileMetadataRepository.findByObjectName(OBJECT_NAME)).thenReturn(Optional.of(pendingFile(fileId)));
+    Blob blob = mock(Blob.class);
+    when(blob.getSize()).thenReturn(1_000L);
+    when(storage.get(any(BlobId.class), any(Storage.BlobGetOption.class))).thenReturn(blob);
+    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> invocation.getArgument(2)
+        instanceof PipelineEventDTO
+            ? CompletableFuture.failedFuture(new KafkaException("broker unreachable"))
+            : CompletableFuture.completedFuture(null));
+
+    // ---- Act ----
+    mockMvc.perform(pushFor(OBJECT_NAME)).andExpect(status().isOk());
+
+    // ---- Assert: the media job was started; the lost event is one WARN, not an error ----
+    verify(kafkaTemplate).send(eq(MEDIA_TOPIC), eq(fileId.toString()), any(FileIngestionEventDTO.class));
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines").isEmpty();
+    assertThat(linesAt(Level.WARN)).as("WARN lines").hasSize(1);
   }
 
   @Test
@@ -114,7 +155,7 @@ class WebhookResponsesTest {
     List<ILoggingEvent> errors = linesAt(Level.ERROR);
     assertThat(errors).as("ERROR lines").hasSize(1);
     assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
-    verifyNoInteractions(kafkaProducerService);
+    verifyNoInteractions(kafkaTemplate);
   }
 
   @Test

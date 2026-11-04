@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03; nothing built yet. Next: brick 1. The definition is in
+**Status:** Planned 2026-11-03. Brick 1 done 2026-11-04. Next: brick 2. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -146,7 +146,7 @@ still processing.
 to, and a lost completion trigger reaches its boundary as a failure of its own type.
 Critical sends are unchanged.
 
-#### 1. Glass box sends are caught where they are sent — ⬜
+#### 1. Glass box sends are caught where they are sent — ✅
 
 Ingestion, media and rag each get one way to send a glass box event. It waits for the
 broker like every send; on failure it logs one WARN and returns, with a comment on the

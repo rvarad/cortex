@@ -125,7 +125,7 @@ public class MediaProcessingService {
         fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
         fileMetadataRepository.save(fileMetadata);
 
-        sendPipelineEvent(fileId.toString(),
+        sendGlassBoxEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
                 .message("This file appears to be corrupted and cannot be processed. It will be deleted.")
                 .metadata(Map.of(
@@ -158,7 +158,7 @@ public class MediaProcessingService {
                 "fileStatus", fileMetadata.getFileStatus().toString()))
             .build();
 
-        sendPipelineEvent(fileId.toString(), pipelineEventDTO);
+        sendGlassBoxEvent(fileId.toString(), pipelineEventDTO);
 
         return;
       }
@@ -194,7 +194,7 @@ public class MediaProcessingService {
           try {
             // The sends stay outside the catch below: a failed send is not a failed
             // normalisation, so it goes to the boundary and leaves playback as it is.
-            sendPipelineEvent(fileId.toString(),
+            sendGlassBoxEvent(fileId.toString(),
                 PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
                     .message("Generating playback version").build());
 
@@ -259,7 +259,7 @@ public class MediaProcessingService {
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
-      sendPipelineEvent(fileId.toString(), pipelineEventDTO);
+      sendGlassBoxEvent(fileId.toString(), pipelineEventDTO);
 
       Process chunking = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
@@ -409,7 +409,7 @@ public class MediaProcessingService {
   private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) throws Exception {
     log.info("Probing media file: {}", streamUrl);
 
-    sendPipelineEvent(fileId.toString(),
+    sendGlassBoxEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
             .message("Analyzing media file").build());
 
@@ -459,7 +459,7 @@ public class MediaProcessingService {
 
     log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
 
-    sendPipelineEvent(fileId.toString(),
+    sendGlassBoxEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
             .message("Media analyzed")
             .metadata(Map.of(
@@ -730,7 +730,7 @@ public class MediaProcessingService {
       log.info("Uploading chunk: {}", fileName);
 
       // Upload event for pipeline
-      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_STARTED).chunkIndex(index)
           .message(mediaType + " chunk upload started").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -739,7 +739,7 @@ public class MediaProcessingService {
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.UPLOADED);
 
       // Upload event for pipeline
-      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
           .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -764,7 +764,7 @@ public class MediaProcessingService {
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
             .status(MediaChunk.Status.UPLOADED).userId(processContext.getUserId()).build());
 
-        sendPipelineEvent(fileId.toString(),
+        sendGlassBoxEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
                 .eventType(PipelineEventEnum.MEDIA_CHUNK_READY).chunkIndex(index)
                 .message("Media chunk ready for processing").metadata(Map.of("chunkId", chunk.getId())).build());
@@ -954,6 +954,15 @@ public class MediaProcessingService {
    */
   private void sendPipelineEvent(String key, PipelineEventDTO event) {
     KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
+  }
+
+  /** A glass box event: it only feeds the timeline, so a failed send is a WARN (ADR-0014, 2026-10-30). */
+  private void sendGlassBoxEvent(String key, PipelineEventDTO event) {
+    try {
+      sendPipelineEvent(key, event);
+    } catch (RuntimeException e) { // Not rethrown: the timeline loses one event; the file's work must go on.
+      log.warn("Glass box event {} not sent", event.getEventType(), e);
+    }
   }
 
   private int extractChunkNumber(String fileName) {

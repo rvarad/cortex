@@ -48,7 +48,7 @@ public class OrchestrationService {
     MDC.put("fileId", event.getFileId().toString());
     try {
       if (event.getVideoPath() != null && !event.getVideoPath().isEmpty()) {
-        sendPipelineEvent(event.getFileId().toString(),
+        sendGlassBoxEvent(event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                 .chunkIndex(event.getChunkIndex())
                 .eventType(PipelineEventEnum.VISION_ANALYSIS_STARTED)
@@ -60,7 +60,7 @@ public class OrchestrationService {
             try {
               MDC.put("fileId", event.getFileId().toString());
               String visionDescription = visionService.generateDescription(event.getVideoPath());
-              sendPipelineEvent(event.getFileId().toString(),
+              sendGlassBoxEvent(event.getFileId().toString(),
                   PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                       .chunkIndex(event.getChunkIndex())
                       .eventType(PipelineEventEnum.VISION_ANALYSIS_COMPLETE)
@@ -74,7 +74,7 @@ public class OrchestrationService {
           : CompletableFuture.completedFuture("");
 
       if (event.getAudioPath() != null && !event.getAudioPath().isEmpty()) {
-        sendPipelineEvent(event.getFileId().toString(),
+        sendGlassBoxEvent(event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                 .chunkIndex(event.getChunkIndex())
                 .eventType(PipelineEventEnum.TRANSCRIPTION_STARTED)
@@ -88,7 +88,7 @@ public class OrchestrationService {
                   MDC.put("fileId", event.getFileId().toString());
                   TranscriptionService.TranscriptionResult transcriptionResult = transcriptionService
                       .transcribe(event.getAudioPath());
-                  sendPipelineEvent(event.getFileId().toString(),
+                  sendGlassBoxEvent(event.getFileId().toString(),
                       PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
                           .chunkIndex(event.getChunkIndex())
                           .eventType(PipelineEventEnum.TRANSCRIPTION_COMPLETE)
@@ -145,5 +145,14 @@ public class OrchestrationService {
    */
   private void sendPipelineEvent(String key, PipelineEventDTO event) {
     KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
+  }
+
+  /** A glass box event: it only feeds the timeline, so a failed send is a WARN (ADR-0014, 2026-10-30). */
+  private void sendGlassBoxEvent(String key, PipelineEventDTO event) {
+    try {
+      sendPipelineEvent(key, event);
+    } catch (RuntimeException e) { // Not rethrown: the timeline loses one event; the chunk's work must go on.
+      log.warn("Glass box event {} not sent", event.getEventType(), e);
+    }
   }
 }

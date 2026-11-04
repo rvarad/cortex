@@ -15,15 +15,14 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
-import com.cortex.cortex_common.dto.PipelineEventDTO;
-import com.cortex.cortex_common.model.PipelineEventEnum;
 
 /**
  * A Kafka send isn't finished when send() returns: it hands back a future, and the result comes
  * later. If nobody looks at it, a failed send leaves no trace — the webhook marks the file UPLOADED,
  * the "file ingested" event never reaches media, and the file sits there forever (ADR-0014).
  *
- * <p>These check that a failed send now throws from the call, so it reaches the caller's boundary.
+ * <p>Checks that a failed critical send throws from the call, so it reaches the caller's boundary.
+ * A glass box send does not throw: WebhookResponsesTest covers it.
  * The KafkaTemplate is a fake whose sends fail the way a producer reports an unreachable broker.
  */
 class KafkaProducerServiceTest {
@@ -52,18 +51,6 @@ class KafkaProducerServiceTest {
         .build();
 
     assertThatThrownBy(() -> kafkaProducerService.sendFileIngestedEvent(event))
-        .hasMessageContaining("broker unreachable");
-  }
-
-  @Test
-  void failedPipelineEventSend_throwsFromTheCall() {
-    PipelineEventDTO event = PipelineEventDTO.builder()
-        .fileId(UUID.randomUUID())
-        .eventType(PipelineEventEnum.PIPELINE_STARTED)
-        .message("File uploaded successfully")
-        .build();
-
-    assertThatThrownBy(() -> kafkaProducerService.sendPipelineEvent(event))
         .hasMessageContaining("broker unreachable");
   }
 }

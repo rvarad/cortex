@@ -266,6 +266,29 @@ class MediaJobUploadFailuresTest {
     assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
+  @Test
+  void aFailedProbeCompleteSend_isOneWarn_andTheJobStillChunks() throws Exception {
+    // ---- Arrange: only the glass box event after the probe can't be sent ----
+    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> {
+      PipelineEventDTO event = invocation.getArgument(2);
+      return event.getEventType() == PipelineEventEnum.PROBE_COMPLETE
+          ? CompletableFuture.failedFuture(new KafkaException("broker unreachable"))
+          : CompletableFuture.completedFuture(null);
+    });
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: the timeline lost one event; the file did not ----
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines from our code").isEmpty();
+    assertThat(linesAt(Level.WARN)).as("WARN lines about the lost event")
+        .filteredOn(warning -> warning.getFormattedMessage().contains("PROBE_COMPLETE"))
+        .hasSize(1);
+    verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
+        eq(true), eq(true), eq("h264"));
+    assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
+  }
+
   /** Where the job keeps its chunks and playback file while it runs. */
   private Path workDir() {
     return Paths.get("/tmp/media-processing-service-chunks", objectName);
