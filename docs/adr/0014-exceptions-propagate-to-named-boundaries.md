@@ -1,6 +1,6 @@
 # 0014. Exceptions propagate to a named boundary, and only the boundary handles them
 
-**Status:** Amended 2026-10-16 (accepted 2026-10-05)
+**Status:** Amended 2026-10-30 (accepted 2026-10-05)
 **Verified by:** Read of every `src/main` file on `reliability-hardening`, 2026-10-04.
 Counted 63 `catch` blocks, 37 `new RuntimeException(...)` wraps, and 20
 `kafkaTemplate.send(...)` calls, none of whose results is looked at. Nothing has been
@@ -257,3 +257,62 @@ The upload workers stay fire-and-forget, but a worker's failure no longer ends t
 it is recorded on its chunk and logged as a WARN, and cleanup tries the chunk once
 more. A chunk that fails again fails the job, with the first failure as the cause.
 Before, a chunk that failed twice left a hole in a file that then completed.
+
+### 2026-10-30 — What a failed send means depends on the event
+
+The Decision says every Kafka send waits for the broker, and a failed send propagates
+like any other failure. That was safe while a failure only made a log line. The
+failed-states work changes that: a failure that reaches a boundary will fail the file.
+Most pipeline events only feed the glass box, the timeline the user watches. If one of
+them is lost, the file is fine. But if the send propagates, the file is failed.
+
+Every send still waits, so no failed send goes unseen. What changes is where the failure
+goes. There are three kinds of send:
+
+- **Critical.** The next stage starts from it: the file ingestion event (ingestion to
+  the media job) and the chunk uploaded event (media to rag). It propagates, and the
+  boundary treats it like any other failure.
+- **Completion trigger.** `CHUNKING_COMPLETE`, `EMBEDDING_COMPLETE`,
+  `NORMALISATION_COMPLETE`, `NORMALISATION_FAILED`. These are glass box events, and
+  ingestion also runs the completion check when one arrives. Each one is the last step
+  of its unit of work, and is sent after the data it announces is saved. It propagates,
+  and the boundary logs it once but does not fail the file. The work is done. Only the
+  signal to check was lost. The sweep (failed-states work) finds a file with no
+  progress, runs the completion check again, and completes the file late.
+- **Glass box.** Every other pipeline event. It is caught where it is sent, logged as a
+  WARN, and the work continues. The catch has a comment on its line.
+
+Why glass box sends do not propagate: a boundary can decide what to record, but it
+cannot run the work that the exception skipped. A lost `PROBE_COMPLETE` that propagates
+stops the job after the probe. The file can then never complete, so the boundary has
+no choice: the file is failed because a UI event was lost. Only a catch at the call
+site lets the work continue.
+
+Why a trigger is not critical: a file whose chunks are embedded and whose playback is
+settled can still complete. Failing it would mean a new upload and paying for the
+vision, transcription and embedding calls again, for work that is already saved. A
+send fails only after the producer has retried for `delivery.timeout.ms`, so Kafka
+must be down for minutes. When that happens, it hits every file in flight at once.
+
+What this costs:
+- The boundary must tell a failed trigger send from other failures, so that failure
+  needs a type the boundary can check.
+- A file whose trigger was lost completes late, by the sweep's interval. Until the
+  sweep exists, it stays stuck, as before this amendment.
+- A lost glass box event is lost for good. The stored timeline can have gaps; the file
+  row, not the timeline, is the truth about a file.
+- While Kafka is down, each glass box send still waits up to `KafkaSends.WAIT` before
+  it gives up. A job sends several per chunk, so it stalls for minutes before its next
+  critical send fails it.
+
+New invariants:
+- Every pipeline send is critical, a completion trigger, or glass box, and its kind is
+  clear where it is sent.
+- A glass box send never ends its unit of work. Its failure is a WARN, not an ERROR.
+- A completion trigger is the last step of its unit, sent after the data it announces
+  is saved. Moving work after it, or sending it before the save, breaks the sweep's
+  repair.
+- A failed critical send fails the file at the boundary. A failed trigger send never
+  does.
+- A new pipeline event is glass box unless the next stage starts from it or the
+  completion check runs on it.
