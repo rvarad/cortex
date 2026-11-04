@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Brick 1 done 2026-11-04. Next: brick 2. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-2 done 2026-11-04. Next: brick 3. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -162,7 +162,7 @@ answers 200 when `PIPELINE_STARTED` fails, and the file ingestion event was sent
 `kafkaTemplate.send` in `src/main` is in a glass box helper, a trigger helper (brick
 2), or one of the two critical sends.
 
-#### 2. Completion triggers fail with their own type — ⬜
+#### 2. Completion triggers fail with their own type — ✅
 
 The four trigger sends (`CHUNKING_COMPLETE`, `NORMALISATION_COMPLETE` and
 `NORMALISATION_FAILED` in media, `EMBEDDING_COMPLETE` in rag) go through one helper per

@@ -49,6 +49,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
@@ -68,9 +69,13 @@ import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 
 /**
- * The upload workers are work the job waits for, through cleanup: a chunk that can't be uploaded
+ * The real job on a real video: what fails it, and what doesn't.
+ *
+ * <p>The upload workers are work the job waits for, through cleanup: a chunk that can't be uploaded
  * must fail the job, not leave a hole in the file (ADR-0014). Cleanup tries a failed chunk once
- * more, so a chunk that fails once still completes.
+ * more, so a chunk that fails once still completes. A failed send depends on its kind (ADR-0014,
+ * 2026-10-30): a glass box event is a WARN and the job goes on; a completion trigger is one ERROR
+ * of its own type.
  *
  * <p>Runs the real job, ffprobe and ffmpeg included, on a 130 s video made by ffmpeg: three 60 s
  * chunk pairs. GCS, Kafka and the repositories are fakes. Skipped when ffmpeg or ffprobe is
@@ -82,6 +87,9 @@ class MediaJobUploadFailuresTest {
   static Path videoDir;
 
   private static Path video;
+
+  /** The same video with its moov atom at the end, so the job remuxes it: normalisation runs. */
+  private static Path moovAtEnd;
 
   private final Logger cortexLogger = (Logger) LoggerFactory.getLogger("com.cortex");
 
@@ -128,6 +136,14 @@ class MediaJobUploadFailuresTest {
         .redirectErrorStream(true).redirectOutput(Redirect.DISCARD).start();
     assertThat(ffmpeg.waitFor(60, TimeUnit.SECONDS)).as("the test video was made").isTrue();
     assertThat(ffmpeg.exitValue()).isZero();
+
+    moovAtEnd = videoDir.resolve("talk-moov-at-end.mp4");
+    // No faststart: ffmpeg writes the moov atom last by default.
+    Process copy = new ProcessBuilder("ffmpeg", "-hide_banner", "-y", "-i", video.toString(), "-c", "copy",
+        moovAtEnd.toString())
+        .redirectErrorStream(true).redirectOutput(Redirect.DISCARD).start();
+    assertThat(copy.waitFor(60, TimeUnit.SECONDS)).as("the moov-at-end video was made").isTrue();
+    assertThat(copy.exitValue()).isZero();
   }
 
   @BeforeEach
@@ -135,16 +151,13 @@ class MediaJobUploadFailuresTest {
     ReflectionTestUtils.setField(mediaProcessingService, "maxDurationInSeconds", 3600.0);
     ReflectionTestUtils.setField(mediaProcessingService, "pipelineEventsTopic", "pipeline-events");
 
-    byte[] videoBytes = Files.readAllBytes(video);
-    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn(video.toString());
-    when(gcsStorageService.readHead(anyString(), anyInt()))
-        .thenAnswer(invocation -> Arrays.copyOf(videoBytes, Math.min(videoBytes.length, invocation.getArgument(1))));
+    useVideo(video);
     when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(FileMetadata.builder()
         .id(fileId)
         .fileDisplayName("talk.mp4")
         .bucketName("cortex-dev-bucket")
         .objectName(objectName)
-        .fileSize((long) videoBytes.length)
+        .fileSize(Files.size(video))
         .fileStatus(FileStatusEnum.UPLOADED)
         .contentType("video/mp4")
         .userId("user-1")
@@ -269,12 +282,7 @@ class MediaJobUploadFailuresTest {
   @Test
   void aFailedProbeCompleteSend_isOneWarn_andTheJobStillChunks() throws Exception {
     // ---- Arrange: only the glass box event after the probe can't be sent ----
-    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> {
-      PipelineEventDTO event = invocation.getArgument(2);
-      return event.getEventType() == PipelineEventEnum.PROBE_COMPLETE
-          ? CompletableFuture.failedFuture(new KafkaException("broker unreachable"))
-          : CompletableFuture.completedFuture(null);
-    });
+    failOnlyTheSendOf(PipelineEventEnum.PROBE_COMPLETE);
 
     // ---- Act ----
     runTheJob();
@@ -289,9 +297,66 @@ class MediaJobUploadFailuresTest {
     assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
   }
 
+  @Test
+  void aFailedChunkingCompleteSend_isOneError_ofTheTriggerType() throws Exception {
+    // ---- Arrange: the chunks are saved; only the trigger that announces them can't be sent ----
+    failOnlyTheSendOf(PipelineEventEnum.CHUNKING_COMPLETE);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, from the job's boundary, that says a trigger was lost ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    ILoggingEvent error = errors.get(0);
+    assertThat(error.getLoggerName()).as("logged by a boundary").isEqualTo(BackgroundTask.class.getName());
+    assertThat(error.getFormattedMessage()).as("the media job's boundary").contains("media job");
+    assertThat(triggerLostWithCause(error.getThrowableProxy(), "broker unreachable"))
+        .as("a CompletionTriggerLostException, with the send's exception under it").isTrue();
+  }
+
+  @Test
+  void aFailedNormalisationCompleteSend_isOneError_ofTheTriggerType() throws Exception {
+    // ---- Arrange: moov at the end, so the job remuxes; only the trigger after it can't be sent ----
+    useVideo(moovAtEnd);
+    failOnlyTheSendOf(PipelineEventEnum.NORMALISATION_COMPLETE);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, from the normalisation thread's boundary, that says a trigger was lost ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    ILoggingEvent error = errors.get(0);
+    assertThat(error.getLoggerName()).as("logged by a boundary").isEqualTo(BackgroundTask.class.getName());
+    assertThat(error.getFormattedMessage()).as("the normalisation thread's boundary").contains("normalisation");
+    assertThat(triggerLostWithCause(error.getThrowableProxy(), "broker unreachable"))
+        .as("a CompletionTriggerLostException, with the send's exception under it").isTrue();
+
+    // ---- and chunking, on its own thread, still finished ----
+    assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
+  }
+
   /** Where the job keeps its chunks and playback file while it runs. */
   private Path workDir() {
     return Paths.get("/tmp/media-processing-service-chunks", objectName);
+  }
+
+  /** GCS serves this video: the job streams it, and reads its head to find the moov atom. */
+  private void useVideo(Path file) throws IOException {
+    byte[] bytes = Files.readAllBytes(file);
+    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn(file.toString());
+    when(gcsStorageService.readHead(anyString(), anyInt()))
+        .thenAnswer(invocation -> Arrays.copyOf(bytes, Math.min(bytes.length, invocation.getArgument(1))));
+  }
+
+  private void failOnlyTheSendOf(PipelineEventEnum failing) {
+    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> {
+      PipelineEventDTO event = invocation.getArgument(2);
+      return event.getEventType() == failing
+          ? CompletableFuture.failedFuture(new KafkaException("broker unreachable"))
+          : CompletableFuture.completedFuture(null);
+    });
   }
 
   private void runTheJob() throws Exception {
@@ -324,6 +389,16 @@ class MediaJobUploadFailuresTest {
     for (IThrowableProxy current = proxy; current != null; current = current.getCause()) {
       if (message.equals(current.getMessage())) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  /** Somewhere in the chain: the trigger type, with the send's own exception as its cause. */
+  private static boolean triggerLostWithCause(IThrowableProxy proxy, String message) {
+    for (IThrowableProxy current = proxy; current != null; current = current.getCause()) {
+      if (current.getClassName().equals(CompletionTriggerLostException.class.getName())) {
+        return current.getCause() != null && message.equals(current.getCause().getMessage());
       }
     }
     return false;

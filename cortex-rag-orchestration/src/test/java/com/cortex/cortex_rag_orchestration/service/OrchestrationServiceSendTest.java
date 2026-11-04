@@ -1,7 +1,7 @@
 package com.cortex.cortex_rag_orchestration.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -11,8 +11,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 
 import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +25,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 
 /**
@@ -30,8 +33,8 @@ import com.cortex.cortex_common.model.PipelineEventEnum;
  *
  * <p>EMBEDDING_COMPLETE is the event ingestion counts to decide a file is finished. If its send
  * fails and nobody looks, the chunk is embedded but never counted, and the file stays PROCESSING
- * with nothing in any log. So a failed send makes the listener method throw, and the Kafka boundary
- * reports it.
+ * with nothing in any log. So a failed send makes the listener method throw a lost-trigger
+ * exception, and the Kafka boundary reports it.
  *
  * <p>A glass box event only feeds the timeline. If its send fails, the chunk is still embedded.
  *
@@ -65,8 +68,16 @@ class OrchestrationServiceSendTest {
     // No video and no audio: the chunk goes straight to embedding, then EMBEDDING_COMPLETE.
     ChunkUploadedEventDTO chunk = chunk().build();
 
-    assertThatThrownBy(() -> orchestrationService.processMediaChunk(chunk))
-        .hasRootCauseMessage("broker unreachable");
+    Throwable thrown = catchThrowable(() -> orchestrationService.processMediaChunk(chunk));
+
+    // A lost trigger, with the send's own exception under it. The Kafka report logs this chain
+    // once at ERROR, as MediaChunkListenerBoundaryTest shows for any exception the listener throws.
+    Throwable trigger = Stream.iterate(thrown, Objects::nonNull, Throwable::getCause)
+        .filter(CompletionTriggerLostException.class::isInstance)
+        .findFirst()
+        .orElse(null);
+    assertThat(trigger).as("a CompletionTriggerLostException in the thrown chain").isNotNull();
+    assertThat(trigger.getCause()).isInstanceOf(KafkaException.class).hasMessage("broker unreachable");
   }
 
   @Test

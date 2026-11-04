@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.kafka.KafkaSends;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 
@@ -124,7 +125,7 @@ public class OrchestrationService {
           }, executorService)
           .get(EMBED_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
-      sendPipelineEvent(event.getFileId().toString(),
+      sendTrigger(event.getFileId().toString(),
           PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
               .chunkIndex(event.getChunkIndex())
               .eventType(PipelineEventEnum.EMBEDDING_COMPLETE).message("Embedding complete")
@@ -140,11 +141,20 @@ public class OrchestrationService {
   }
 
   /**
-   * Waits for the broker: a failed send throws here and fails the record
-   * (ADR-0014).
+   * The raw send: waits for the broker, and a failed send throws (ADR-0014). Call
+   * {@link #sendGlassBoxEvent} or {@link #sendTrigger}, not this: the kind decides what a failure means.
    */
   private void sendPipelineEvent(String key, PipelineEventDTO event) {
     KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
+  }
+
+  /** A completion trigger: a failed send throws its own type, so a boundary can tell it apart (ADR-0014, 2026-10-30). */
+  private void sendTrigger(String key, PipelineEventDTO event) {
+    try {
+      sendPipelineEvent(key, event);
+    } catch (RuntimeException e) {
+      throw new CompletionTriggerLostException(event.getEventType(), e);
+    }
   }
 
   /** A glass box event: it only feeds the timeline, so a failed send is a WARN (ADR-0014, 2026-10-30). */
