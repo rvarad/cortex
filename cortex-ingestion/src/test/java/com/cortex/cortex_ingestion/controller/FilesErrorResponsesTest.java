@@ -18,6 +18,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -152,6 +154,19 @@ class FilesErrorResponsesTest {
         .andExpect(status().isGone())
         .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
         .andExpect(jsonPath("$.detail").value("This upload was rejected and is no longer available."));
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = FileStatusEnum.class, names = { "FOR_CLEANUP", "FAILED" })
+  void playbackForAFailedFile_is410(FileStatusEnum failed) throws Exception {
+    // Before cleanup and after: a failed file has no playback, as a rejected one has none.
+    UUID fileId = UUID.randomUUID();
+    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID))
+        .thenReturn(Optional.of(file(fileId, failed)));
+
+    mockMvc.perform(asUser(get("/api/v1/files/{fileId}/playback-url", fileId)))
+        .andExpect(status().isGone())
+        .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
   }
 
   @Test

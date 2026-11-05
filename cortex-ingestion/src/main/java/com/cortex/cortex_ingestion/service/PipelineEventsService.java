@@ -55,11 +55,9 @@ public class PipelineEventsService {
 
     sendPreviousEvents(fileId, emitter);
 
-    if (file.getFileStatus() == FileStatusEnum.COMPLETED) {
-      log.info("[PipelineEventsService] File is already completed. Closing emitter for fileId: {}", fileId);
-      emitter.complete();
-    } else if (file.getFileStatus() == FileStatusEnum.REJECTED || file.getFileStatus() == FileStatusEnum.FAILED) {
-      log.info("[PipelineEventsService] File has been rejected. Closing emitter for fileId: {}", fileId);
+    if (file.getFileStatus().isTerminal()) {
+      log.info("[PipelineEventsService] File is {}: its run has ended. Closing emitter for fileId: {}",
+          file.getFileStatus(), fileId);
       emitter.complete();
     } else {
       sseEmitterRegistry.addEmitter(fileId, emitter);
@@ -141,7 +139,8 @@ public class PipelineEventsService {
       return;
     }
 
-    if (file.getFileStatus() == FileStatusEnum.COMPLETED)
+    // Under the row lock: a file that failed or was rejected while this event waited stays so.
+    if (file.getFileStatus().isTerminal())
       return;
 
     if (file.getTotalChunks() == null || file.getTotalChunks() == 0)

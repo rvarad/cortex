@@ -27,6 +27,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -66,7 +67,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
-import ch.qos.logback.core.read.ListAppender;
+import ch.qos.logback.core.AppenderBase;
 
 /**
  * The real job on a real video: what fails it, and what doesn't.
@@ -93,12 +94,15 @@ class MediaJobUploadFailuresTest {
 
   private final Logger cortexLogger = (Logger) LoggerFactory.getLogger("com.cortex");
 
+  /** Thread-safe: on a failed job, its watcher still logs after the job ends. */
+  private final List<ILoggingEvent> captured = new CopyOnWriteArrayList<>();
+
   /** Freezes each event as it arrives — logback reads MDC lazily, from whoever asks first. */
-  private final ListAppender<ILoggingEvent> captured = new ListAppender<>() {
+  private final AppenderBase<ILoggingEvent> appender = new AppenderBase<>() {
     @Override
     protected void append(ILoggingEvent event) {
       event.prepareForDeferredProcessing();
-      super.append(event);
+      captured.add(event);
     }
   };
 
@@ -168,13 +172,13 @@ class MediaJobUploadFailuresTest {
     when(gcsStorageService.uploadChunk(anyString(), any(Path.class)))
         .thenAnswer(invocation -> "chunks/" + invocation.<Path>getArgument(1).getFileName());
 
-    captured.start();
-    cortexLogger.addAppender(captured);
+    appender.start();
+    cortexLogger.addAppender(appender);
   }
 
   @AfterEach
   void tearDown() throws IOException {
-    cortexLogger.detachAppender(captured);
+    cortexLogger.detachAppender(appender);
     executor.shutdown();
     MDC.clear();
     // Only if a test failed: the job deletes its own work directory.
@@ -376,7 +380,7 @@ class MediaJobUploadFailuresTest {
   }
 
   private List<ILoggingEvent> linesAt(Level level) {
-    return captured.list.stream().filter(logged -> logged.getLevel() == level).toList();
+    return captured.stream().filter(logged -> logged.getLevel() == level).toList();
   }
 
   private static MediaChunk withId(MediaChunk chunk) {

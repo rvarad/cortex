@@ -13,6 +13,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.server.ResponseStatusException;
 
 import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_ingestion.dto.FileResponseDTO;
@@ -39,7 +40,8 @@ public class FilesService {
           return FileResponseDTO.builder().fileId(file.getId()).fileDisplayName(file.getFileDisplayName())
               .objectName(file.getObjectName()).contentType(file.getContentType()).fileSize(file.getFileSize())
               .durationSeconds(file.getDurationSeconds())
-              .fileStatus(file.getFileStatus().name())
+              // FOR_CLEANUP is the sweep's to-do list; to the user, a failed file is FAILED.
+              .fileStatus(file.getFileStatus().isFailed() ? FileStatusEnum.FAILED.name() : file.getFileStatus().name())
               .rejectionReason(file.getRejectionReason() != null ? file.getRejectionReason().name() : null)
               .playbackStatus(file.getPlaybackStatus() != null ? file.getPlaybackStatus().name() : null)
               .build();

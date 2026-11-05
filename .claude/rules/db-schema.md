@@ -7,7 +7,7 @@ paths:
 # Schema changes
 
 `cortex-ingestion` owns every Flyway migration — `src/main/resources/db/migration/`,
-currently `V1`–`V9`. It owns them even for tables it never reads. There is no
+currently `V1`–`V12`. It owns them even for tables it never reads. There is no
 second migration directory anywhere in the repo.
 
 All three JPA services run `spring.jpa.hibernate.ddl-auto=validate`. Nothing

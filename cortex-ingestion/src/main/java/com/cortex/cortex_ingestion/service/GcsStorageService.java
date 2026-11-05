@@ -201,6 +201,11 @@ public class GcsStorageService {
           "This upload was rejected and is no longer available.");
     }
 
+    if (fileMetadata.getFileStatus().isFailed()) {
+      throw new ResponseStatusException(HttpStatus.GONE,
+          "Processing of this file failed; it is no longer available.");
+    }
+
     if (fileMetadata.getPlaybackStatus() == PlaybackStatusEnum.PENDING)
       throw new ResponseStatusException(HttpStatus.TOO_EARLY, "File still processing");
 

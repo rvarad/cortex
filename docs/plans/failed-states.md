@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-2 done 2026-11-04. Next: brick 3. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-3 done 2026-11-05. Next: brick 4. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -183,7 +183,7 @@ failed. The dashboard and the file page say so, with the error message and no sp
 Nothing turns a failed file back, rag spends nothing more on it, and search leaves it
 out. Until slice 3 a failed file stays `FOR_CLEANUP`, with its data.
 
-#### 3. The statuses and their lists — ⬜
+#### 3. The statuses and their lists — ✅
 
 A migration adds `FOR_CLEANUP` to the `file_status` CHECK constraint, and the entity's
 `columnDefinition` matches. `FileStatusEnum` gets `FOR_CLEANUP`, the terminal list, the
@@ -232,6 +232,14 @@ logged at INFO, and the job returns before the probe.
 the file stays `CHUNKED`, no `PIPELINE_FAILED`; marking throws → the boundary's one
 ERROR carries the original exception, with the marking failure suppressed; a job for a
 `FOR_CLEANUP` file never calls ffprobe.
+
+**Check first (found 2026-11-05):** the job's `finally` does not wait for its watcher and
+upload dispatcher. On a failed job they run on for up to 1 s (seen in
+`MediaJobUploadFailuresTest`: the watcher logs after the job ends). Not seen, only read
+in the code: a job that fails before cleanup's sweep leaves its last chunk unqueued; the
+late watcher queues it after `finally` clears the queue, and the dispatcher, still in its
+loop, uploads it. That chunk of a failed file gets a GCS object, a `media_chunk` row and
+an embedding. If a test shows it, the `finally` waits for both helpers.
 
 #### 7. A failed chunk fails its file; rag skips failed files — ⬜
 
