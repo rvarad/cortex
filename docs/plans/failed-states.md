@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05. Next: brick 5. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, brick 5 2026-11-12. Next: brick 6. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -210,7 +210,7 @@ under its row lock (brick 3).
 `FOR_CLEANUP` row as it is, and still works on a row that is not terminal. A test: the
 webhook for a `FOR_CLEANUP` file answers 200 and sends nothing.
 
-#### 5. Search leaves failed files out — ⬜
+#### 5. Search leaves failed files out — ✅
 
 The semantic and the lexical query leave out chunks whose file is in the failed list,
 passed in as a parameter.

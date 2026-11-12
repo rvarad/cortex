@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import com.cortex.cortex_common.dto.SearchRequestDTO;
 import com.cortex.cortex_common.dto.SearchResultDTO;
 import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
@@ -42,6 +43,10 @@ public class SearchService {
 
   private static final double RRF_K = 60;
 
+  /** Search leaves these files' chunks out. Names, not enums: the search queries are native SQL. */
+  private static final List<String> FAILED_STATUSES =
+      FileStatusEnum.FAILED_STATUSES.stream().map(Enum::name).toList();
+
   private final int tokenBudget;
 
   public SearchService(@Qualifier("googleGenAiTextEmbedding") EmbeddingModel embeddingModel,
@@ -60,11 +65,13 @@ public class SearchService {
     String languageCode = request.getLanguageCode() != null ? request.getLanguageCode() : "en";
 
     CompletableFuture<List<UUID>> semanticSearchFuture = CompletableFuture.supplyAsync(
-        () -> mediaChunkRepository.semanticSearch(userId, queryVector, request.getFileId(), CANDIDATE_LIMIT),
+        () -> mediaChunkRepository.semanticSearch(userId, queryVector, request.getFileId(), CANDIDATE_LIMIT,
+            FAILED_STATUSES),
         executorService);
 
     CompletableFuture<List<UUID>> lexicalSearchFuture = CompletableFuture.supplyAsync(() -> mediaChunkRepository
-        .lexicalSearch(userId, request.getQuery(), languageCode, request.getFileId(), CANDIDATE_LIMIT),
+        .lexicalSearch(userId, request.getQuery(), languageCode, request.getFileId(), CANDIDATE_LIMIT,
+            FAILED_STATUSES),
         executorService);
 
     CompletableFuture.allOf(semanticSearchFuture, lexicalSearchFuture).join();
