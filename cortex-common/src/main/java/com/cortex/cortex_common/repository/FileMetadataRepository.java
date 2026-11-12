@@ -1,5 +1,6 @@
 package com.cortex.cortex_common.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
+import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 
 import jakarta.persistence.LockModeType;
 
@@ -29,6 +31,25 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
 
   Optional<FileMetadata> findByIdAndUserId(UUID fileId, String userId);
 
+  // The status writes below change a row only when its status is not in `terminal`
+  // (FileStatusEnum.TERMINAL_STATUSES): the pipeline never moves a terminal file. Each
+  // returns the rows it changed; 0 means the file is terminal or gone, and the caller stops.
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.UPLOADED, "
+      + "f.fileSize = :fileSize WHERE f.id = :fileId AND f.fileStatus NOT IN :terminal")
+  int markUploaded(@Param("fileId") UUID fileId, @Param("fileSize") Long fileSize,
+      @Param("terminal") Collection<FileStatusEnum> terminal);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.REJECTED, "
+      + "f.rejectionReason = :reason, f.fileSize = :fileSize "
+      + "WHERE f.id = :fileId AND f.fileStatus NOT IN :terminal")
+  int markRejected(@Param("fileId") UUID fileId, @Param("reason") UploadRejectReasonEnum reason,
+      @Param("fileSize") Long fileSize, @Param("terminal") Collection<FileStatusEnum> terminal);
+
   // Targeted update of the chunking result only — deliberately does NOT touch
   // playbackObjectName, which the normalization thread owns via its own update.
   // Disjoint columns => the two writers can't clobber each other, in any order.
@@ -36,11 +57,17 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
   @Modifying
   @Query("UPDATE FileMetadata f SET f.fileStatus = :status, f.totalChunks = :totalChunks, "
       + "f.durationSeconds = :durationSeconds, f.hasVideo = :hasVideo, f.hasAudio = :hasAudio, "
-      + "f.videoCodec = :videoCodec WHERE f.id = :fileId")
-  void updateChunkingResult(@Param("fileId") UUID fileId, @Param("status") FileStatusEnum status,
+      + "f.videoCodec = :videoCodec WHERE f.id = :fileId AND f.fileStatus NOT IN :terminal")
+  int updateChunkingResult(@Param("fileId") UUID fileId, @Param("status") FileStatusEnum status,
       @Param("totalChunks") Integer totalChunks, @Param("durationSeconds") Double durationSeconds,
       @Param("hasVideo") Boolean hasVideo, @Param("hasAudio") Boolean hasAudio,
-      @Param("videoCodec") String videoCodec);
+      @Param("videoCodec") String videoCodec, @Param("terminal") Collection<FileStatusEnum> terminal);
+
+  // Only the name: a save of the whole row would write back the status it read.
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileDisplayName = :name WHERE f.id = :fileId AND f.userId = :userId")
+  int rename(@Param("fileId") UUID fileId, @Param("userId") String userId, @Param("name") String name);
 
   // Playback succeeded: pin the object name and flip status to READY in one write,
   // so the two can never drift (READY <=> playbackObjectName != null).

@@ -78,11 +78,9 @@ public class FilesService {
 
   @Transactional
   public void updateFileDisplayName(UUID fileId, String newDisplayName, String userId) {
-    FileMetadata file = fileMetadataRepository.findByIdAndUserId(fileId, userId)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
-
-    file.setFileDisplayName(newDisplayName);
-    fileMetadataRepository.save(file);
+    if (fileMetadataRepository.rename(fileId, userId, newDisplayName) == 0) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found");
+    }
 
     log.info("[FilesService] Successfully updated display name for fileId: {} to '{}'", fileId, newDisplayName);
   }

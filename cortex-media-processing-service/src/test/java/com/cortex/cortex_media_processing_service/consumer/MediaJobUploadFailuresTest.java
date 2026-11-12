@@ -166,6 +166,9 @@ class MediaJobUploadFailuresTest {
         .contentType("video/mp4")
         .userId("user-1")
         .build()));
+    // The file is not terminal, so the write changes its row (FileMetadataRepositoryTest).
+    when(fileMetadataRepository.updateChunkingResult(any(), any(), anyInt(), anyDouble(), anyBoolean(), anyBoolean(),
+        any(), any())).thenReturn(1);
     when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
     when(kafkaTemplate.send(anyString(), any())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
     when(mediaChunkRepository.save(any(MediaChunk.class))).thenAnswer(invocation -> withId(invocation.getArgument(0)));
@@ -223,7 +226,7 @@ class MediaJobUploadFailuresTest {
 
     // ---- and the file is not completed with chunk 1 missing ----
     verify(fileMetadataRepository, never()).updateChunkingResult(any(), any(), anyInt(), anyDouble(), anyBoolean(),
-        anyBoolean(), any());
+        anyBoolean(), any(), any());
     assertThat(pipelineEventsSent()).as("pipeline events sent")
         .doesNotContain(PipelineEventEnum.CHUNKING_COMPLETE);
 
@@ -252,7 +255,7 @@ class MediaJobUploadFailuresTest {
     assertThat(linesAt(Level.WARN)).as("WARN lines")
         .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_001.wav"));
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
-        eq(true), eq(true), eq("h264"));
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
     assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
@@ -279,7 +282,7 @@ class MediaJobUploadFailuresTest {
     assertThat(linesAt(Level.WARN)).as("WARN lines")
         .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_002.wav"));
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
-        eq(true), eq(true), eq("h264"));
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
     assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
@@ -297,7 +300,7 @@ class MediaJobUploadFailuresTest {
         .filteredOn(warning -> warning.getFormattedMessage().contains("PROBE_COMPLETE"))
         .hasSize(1);
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
-        eq(true), eq(true), eq("h264"));
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
     assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
   }
 

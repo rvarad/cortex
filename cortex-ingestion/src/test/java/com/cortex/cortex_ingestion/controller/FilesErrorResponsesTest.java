@@ -118,7 +118,7 @@ class FilesErrorResponsesTest {
   @Test
   void renamingAFileThatIsNotYours_is404() throws Exception {
     UUID fileId = UUID.randomUUID();
-    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID)).thenReturn(Optional.empty());
+    when(fileMetadataRepository.rename(fileId, USER_ID, "talk.mp4")).thenReturn(0); // no row of theirs
 
     mockMvc.perform(asUser(patch("/api/v1/files/update/{fileId}", fileId))
         .contentType(MediaType.APPLICATION_JSON)

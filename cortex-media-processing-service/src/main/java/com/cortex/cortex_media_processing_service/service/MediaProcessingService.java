@@ -122,9 +122,8 @@ public class MediaProcessingService {
         // WARN: a rejected upload is the user's input, not our failure.
         log.warn("Media file is corrupted: {}", objectName);
         gcsStorageService.deleteObject(objectName);
-        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-        fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
-        fileMetadataRepository.save(fileMetadata);
+        if (!markRejected(fileMetadata, UploadRejectReasonEnum.CORRUPTED))
+          return;
 
         sendGlassBoxEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
@@ -133,7 +132,7 @@ public class MediaProcessingService {
                     "contentType", fileMetadata.getContentType(),
                     "objectName", fileMetadata.getObjectName(),
                     "bucketName", fileMetadata.getBucketName(),
-                    "fileStatus", fileMetadata.getFileStatus().toString()))
+                    "fileStatus", FileStatusEnum.REJECTED.name()))
                 .build());
 
         return;
@@ -141,9 +140,8 @@ public class MediaProcessingService {
 
       if (manifestDTO.getDuration_s() > maxDurationInSeconds) {
         gcsStorageService.deleteObject(objectName);
-        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-        fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_LONG);
-        fileMetadataRepository.save(fileMetadata);
+        if (!markRejected(fileMetadata, UploadRejectReasonEnum.TOO_LONG))
+          return;
         log.info("[MediaProcessingService] File too long: {}", objectName);
 
         PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
@@ -156,7 +154,7 @@ public class MediaProcessingService {
                 "durationInSeconds", manifestDTO.getDuration_s(),
                 "objectName", fileMetadata.getObjectName(),
                 "bucketName", fileMetadata.getBucketName(),
-                "fileStatus", fileMetadata.getFileStatus().toString()))
+                "fileStatus", FileStatusEnum.REJECTED.name()))
             .build();
 
         sendGlassBoxEvent(fileId.toString(), pipelineEventDTO);
@@ -287,9 +285,12 @@ public class MediaProcessingService {
       // full save, so it leaves playbackObjectName alone (the normalization thread
       // owns that column). This makes totalChunks durable before CHUNKING_COMPLETE
       // fires and before embeddings finish, so the completion check can read it.
-      fileMetadataRepository.updateChunkingResult(fileId, FileStatusEnum.CHUNKED, totalChunksCount,
+      if (fileMetadataRepository.updateChunkingResult(fileId, FileStatusEnum.CHUNKED, totalChunksCount,
           manifestDTO.getDuration_s(), manifestDTO.isHasVideo(), manifestDTO.isHasAudio(),
-          manifestDTO.getVideoCodec());
+          manifestDTO.getVideoCodec(), FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("Chunking done, but the file became terminal or was deleted: no CHUNKING_COMPLETE");
+        return;
+      }
       log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
 
       sendTrigger(fileId.toString(),
@@ -955,6 +956,19 @@ public class MediaProcessingService {
    */
   private void sendPipelineEvent(String key, PipelineEventDTO event) {
     KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
+  }
+
+  /**
+   * Called after the object is deleted: a rejected object is of no use, whatever the status. False
+   * when the write changed no row, and the caller then sends no event.
+   */
+  private boolean markRejected(FileMetadata file, UploadRejectReasonEnum reason) {
+    if (fileMetadataRepository.markRejected(file.getId(), reason, file.getFileSize(),
+        FileStatusEnum.TERMINAL_STATUSES) == 0) {
+      log.info("File {}, but it is already terminal or deleted: no event sent", reason);
+      return false;
+    }
+    return true;
   }
 
   /** A completion trigger: a failed send throws its own type, so a boundary can tell it apart (ADR-0014, 2026-10-30). */

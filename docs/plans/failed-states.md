@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-3 done 2026-11-05. Next: brick 4. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05. Next: brick 5. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -198,7 +198,7 @@ check leaves a `FOR_CLEANUP` file as it is; the file list returns `FAILED` for a
 browser, a file set to `FOR_CLEANUP` by hand in psql shows the Failed chip and no Play
 button, and the dashboard stops polling.
 
-#### 4. Nothing writes over a terminal status — ⬜
+#### 4. Nothing writes over a terminal status — ✅
 
 Every status write that is a full save becomes a conditional update that changes the
 row only when its status is not terminal: the webhook's `UPLOADED` and `REJECTED`,

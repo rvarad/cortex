@@ -125,14 +125,13 @@ public class GcsStorageService {
 
     long actualSize = blob.getSize();
 
-    if (actualSize <= maxFileBytes) {
-      fileMetadata.setFileSize(actualSize);
-    } else {
+    if (actualSize > maxFileBytes) {
       deleteObject(decodedObjectName, fileMetadata.getId());
-      fileMetadata.setFileSize(actualSize);
-      fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-      fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_BIG);
-      fileMetadataRepository.save(fileMetadata);
+      if (fileMetadataRepository.markRejected(fileMetadata.getId(), UploadRejectReasonEnum.TOO_BIG, actualSize,
+          FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("[GCSService] File too big, but it is already terminal or deleted: no event sent");
+        return;
+      }
       // WARN: a rejected upload is the user's input, not our failure.
       log.warn("[GCSService] File too big: {}", decodedObjectName);
 
@@ -140,34 +139,36 @@ public class GcsStorageService {
           .eventType(PipelineEventEnum.UPLOAD_REJECTED)
           .message(
               "File is too large to be processed, please upload a file smaller than " + (maxFileBytes / 1024 / 1024)
-                  + " MB. This file with size " + (fileMetadata.getFileSize() / 1024 / 1024) + " MB will be deleted.")
+                  + " MB. This file with size " + (actualSize / 1024 / 1024) + " MB will be deleted.")
           .metadata(Map.of(
               "contentType", fileMetadata.getContentType(),
               "fileSize", actualSize,
               "objectName", fileMetadata.getObjectName(),
               "bucketName", fileMetadata.getBucketName(),
-              "fileStatus", fileMetadata.getFileStatus().toString()))
+              "fileStatus", FileStatusEnum.REJECTED.name()))
           .build();
 
       kafkaProducerService.sendGlassBoxEvent(pipelineEventDTO);
       return;
     }
 
-    fileMetadata.setFileStatus(FileStatusEnum.UPLOADED);
-    fileMetadataRepository.save(fileMetadata);
-    log.info("[GCSService] Updated file metadata: {}", fileMetadata);
+    if (fileMetadataRepository.markUploaded(fileMetadata.getId(), actualSize, FileStatusEnum.TERMINAL_STATUSES) == 0) {
+      log.info("[GCSService] File is already terminal or deleted: pipeline not started");
+      return;
+    }
+    log.info("[GCSService] Marked file UPLOADED, size {}", actualSize);
 
     FileIngestionEventDTO event = FileIngestionEventDTO.builder().fileId(fileMetadata.getId())
-        .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(fileMetadata.getFileSize())
-        .fileStatus(fileMetadata.getFileStatus().toString()).userId(fileMetadata.getUserId()).build();
+        .objectName(decodedObjectName).contentType(fileMetadata.getContentType()).fileSize(actualSize)
+        .fileStatus(FileStatusEnum.UPLOADED.name()).userId(fileMetadata.getUserId()).build();
 
     PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
         .eventType(PipelineEventEnum.PIPELINE_STARTED).message("File uploaded successfully").metadata(Map.of(
             "contentType", fileMetadata.getContentType(),
-            "fileSize", fileMetadata.getFileSize(),
+            "fileSize", actualSize,
             "objectName", fileMetadata.getObjectName(),
             "bucketName", fileMetadata.getBucketName(),
-            "fileStatus", fileMetadata.getFileStatus().toString()))
+            "fileStatus", FileStatusEnum.UPLOADED.name()))
         .build();
 
     kafkaProducerService.sendFileIngestedEvent(event);

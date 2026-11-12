@@ -126,6 +126,7 @@ class WebhookResponsesTest {
     // ---- Arrange: the upload is fine; only the glass box event can't be sent ----
     UUID fileId = UUID.randomUUID();
     when(fileMetadataRepository.findByObjectName(OBJECT_NAME)).thenReturn(Optional.of(pendingFile(fileId)));
+    when(fileMetadataRepository.markUploaded(eq(fileId), any(), any())).thenReturn(1);
     Blob blob = mock(Blob.class);
     when(blob.getSize()).thenReturn(1_000L);
     when(storage.get(any(BlobId.class), any(Storage.BlobGetOption.class))).thenReturn(blob);
@@ -141,6 +142,28 @@ class WebhookResponsesTest {
     verify(kafkaTemplate).send(eq(MEDIA_TOPIC), eq(fileId.toString()), any(FileIngestionEventDTO.class));
     assertThat(linesAt(Level.ERROR)).as("ERROR lines").isEmpty();
     assertThat(linesAt(Level.WARN)).as("WARN lines").hasSize(1);
+  }
+
+  @Test
+  void theWebhookForATerminalFile_answers200_andSendsNothing() throws Exception {
+    // ---- Arrange: the file failed before Pub/Sub's notification came ----
+    UUID fileId = UUID.randomUUID();
+    FileMetadata file = pendingFile(fileId);
+    file.setFileStatus(FileStatusEnum.FOR_CLEANUP);
+    when(fileMetadataRepository.findByObjectName(OBJECT_NAME)).thenReturn(Optional.of(file));
+    Blob blob = mock(Blob.class);
+    when(blob.getSize()).thenReturn(1_000L);
+    when(storage.get(any(BlobId.class), any(Storage.BlobGetOption.class))).thenReturn(blob);
+    // What the repository answers for a FOR_CLEANUP row (FileMetadataRepositoryTest).
+    when(fileMetadataRepository.markUploaded(eq(fileId), any(), any())).thenReturn(0);
+
+    // ---- Act ----
+    mockMvc.perform(pushFor(OBJECT_NAME)).andExpect(status().isOk());
+
+    // ---- Assert: no media job, no event; nothing went wrong, so nothing above INFO ----
+    verifyNoInteractions(kafkaTemplate);
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines").isEmpty();
+    assertThat(linesAt(Level.WARN)).as("WARN lines").isEmpty();
   }
 
   @Test
