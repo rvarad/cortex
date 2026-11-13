@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +29,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.test.EmbeddedKafkaBroker;
@@ -36,6 +38,9 @@ import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
+import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -78,6 +83,9 @@ class MediaChunkListenerBoundaryTest {
   @MockitoBean
   private EmbeddingService embeddingService;
 
+  @MockitoBean
+  private FileMetadataRepository fileMetadataRepository;
+
   @Autowired
   private KafkaTemplate<String, Object> kafkaTemplate;
 
@@ -103,6 +111,10 @@ class MediaChunkListenerBoundaryTest {
     // an appender attached earlier.
     appender.start();
     cortexLogger.addAppender(appender);
+
+    FileMetadata file = new FileMetadata(); // the builder wants every non-null column; the listener reads only the status
+    file.setFileStatus(FileStatusEnum.PROCESSING);
+    when(fileMetadataRepository.findById(any())).thenReturn(Optional.of(file));
   }
 
   @AfterEach
@@ -136,6 +148,35 @@ class MediaChunkListenerBoundaryTest {
     assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", failingFileId.toString());
     assertThat(causeChainContains(errors.get(0).getThrowableProxy(), "Gemini unavailable"))
         .as("the original failure is in the logged stack trace").isTrue();
+
+    verify(fileMetadataRepository).markForCleanup(failingFileId, FileStatusEnum.TERMINAL_STATUSES);
+  }
+
+  @Test
+  void aMarkingThatThrows_isStillReportedOnce_andSkipped() {
+    // ---- Arrange: vision fails, and so does the marking of the file ----
+    UUID failingFileId = UUID.randomUUID();
+    UUID nextChunkId = UUID.randomUUID();
+
+    when(visionService.generateDescription(anyString()))
+        .thenThrow(new IllegalStateException("Gemini unavailable"));
+    when(fileMetadataRepository.markForCleanup(any(), any()))
+        .thenThrow(new DataAccessResourceFailureException("database down"));
+
+    // ---- Act ----
+    kafkaTemplate.send(TOPIC, chunk(failingFileId, UUID.randomUUID(), "chunks/a/video_chunk_000.mp4"));
+    kafkaTemplate.send(TOPIC, chunk(UUID.randomUUID(), nextChunkId, null));
+
+    verify(embeddingService, timeout(30_000))
+        .generateAndSaveEmbedding(any(), any(), eq(nextChunkId), anyInt(), any());
+
+    // ---- Assert: reported once and skipped, not delivered again ----
+    verify(visionService, times(1).description("Gemini is called once: not delivered again"))
+        .generateDescription(anyString());
+
+    List<ILoggingEvent> errors = errors();
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", failingFileId.toString());
   }
 
   @Test

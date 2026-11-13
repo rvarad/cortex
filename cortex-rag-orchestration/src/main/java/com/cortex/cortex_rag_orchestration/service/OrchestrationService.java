@@ -1,6 +1,7 @@
 package com.cortex.cortex_rag_orchestration.service;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,7 +17,9 @@ import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.kafka.KafkaSends;
+import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +39,7 @@ public class OrchestrationService {
   private final VisionService visionService;
   private final TranscriptionService transcriptionService;
   private final EmbeddingService embeddingService;
+  private final FileMetadataRepository fileMetadataRepository;
 
   private int INFERENCE_TIMEOUT_SECONDS = 200;
   private int EMBED_TIMEOUT_SECONDS = 45;
@@ -48,6 +52,15 @@ public class OrchestrationService {
 
     MDC.put("fileId", event.getFileId().toString());
     try {
+      FileStatusEnum status = fileMetadataRepository.findById(event.getFileId())
+          .orElseThrow(() -> new IllegalStateException("File not found: " + event.getFileId()))
+          .getFileStatus();
+      // Failed or completed while this chunk waited in Kafka: no model call is spent on it.
+      if (status.isTerminal()) {
+        log.info("File is already {}: chunk {} not processed", status, event.getChunkId());
+        return;
+      }
+
       if (event.getVideoPath() != null && !event.getVideoPath().isEmpty()) {
         sendGlassBoxEvent(event.getFileId().toString(),
             PipelineEventDTO.builder().fileId(event.getFileId()).chunkId(event.getChunkId())
@@ -130,14 +143,35 @@ public class OrchestrationService {
               .chunkIndex(event.getChunkIndex())
               .eventType(PipelineEventEnum.EMBEDDING_COMPLETE).message("Embedding complete")
               .build());
+    } catch (CompletionTriggerLostException e) {
+      throw e; // Not failed: its work is saved, and the sweep completes the file (failed-states, Decisions).
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new RuntimeException("Error processing media chunk", e);
+      throw failFile(event.getFileId(), new RuntimeException("Error processing media chunk", e));
     } catch (Exception e) {
-      throw new RuntimeException("Error processing media chunk", e);
+      throw failFile(event.getFileId(), new RuntimeException("Error processing media chunk", e));
     } finally {
       MDC.remove("fileId");
     }
+  }
+
+  /**
+   * Marks the file failed and, when that moved it, puts PIPELINE_FAILED on its timeline. Returns
+   * {@code failure} for the caller to throw: the Kafka boundary still reports the record once.
+   */
+  private RuntimeException failFile(UUID fileId, RuntimeException failure) {
+    try {
+      if (fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("Chunk failed, but the file is already terminal or deleted: not marked");
+        return failure;
+      }
+    } catch (RuntimeException e) { // Suppressed, never thrown: it must not replace the chunk's own failure.
+      failure.addSuppressed(e);
+      return failure;
+    }
+    sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+        .eventType(PipelineEventEnum.PIPELINE_FAILED).message(PipelineEventEnum.FAILED_BY_ERROR_MESSAGE).build());
+    return failure;
   }
 
   /**

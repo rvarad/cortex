@@ -101,10 +101,6 @@ public class MediaProcessingService {
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
   private final Semaphore normalisationSlots = new Semaphore(MAX_CONCURRENT_NORMALISATIONS);
 
-  /** What the user reads when a file fails by an error (failed-states, Decisions). */
-  private static final String FAILED_BY_ERROR_MESSAGE =
-      "Processing stopped because of an error on our side. Delete this file and upload it again.";
-
   /**
    * Runs one media job. Throws whatever goes wrong: the caller wraps this in BackgroundTask, the
    * job's boundary, which is the one place its failures are reported (ADR-0014). A failure fails the
@@ -136,7 +132,7 @@ public class MediaProcessingService {
       return;
     }
     sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
-        .eventType(PipelineEventEnum.PIPELINE_FAILED).message(FAILED_BY_ERROR_MESSAGE).build());
+        .eventType(PipelineEventEnum.PIPELINE_FAILED).message(PipelineEventEnum.FAILED_BY_ERROR_MESSAGE).build());
   }
 
   private void runJob(String objectName, UUID fileId, String userId) throws Exception {

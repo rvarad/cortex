@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12. Next: brick 7. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, brick 7 2026-11-13. Next: brick 8. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -248,7 +248,7 @@ The `finally` now waits for both helpers. That alone moved the third upload into
 is removed: on success cleanup's sweep already queues them, so it only ever ran for a
 failed job.
 
-#### 7. A failed chunk fails its file; rag skips failed files — ⬜
+#### 7. A failed chunk fails its file; rag skips failed files — ✅
 
 The rag listener does the same as brick 6: a failure other than a lost trigger marks the
 file and, when the update changed the row, sends `PIPELINE_FAILED`. The failure goes on

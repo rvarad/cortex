@@ -7,11 +7,13 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
@@ -26,7 +28,10 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
+import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 
 /**
  * What a failed send does depends on its kind (ADR-0014, 2026-10-30 amendment).
@@ -50,15 +55,20 @@ class OrchestrationServiceSendTest {
 
   private final EmbeddingService embeddingService = mock(EmbeddingService.class);
 
+  private final FileMetadataRepository fileMetadataRepository = mock(FileMetadataRepository.class);
+
   private final OrchestrationService orchestrationService = new OrchestrationService(
-      kafkaTemplate, visionService, mock(TranscriptionService.class), embeddingService);
+      kafkaTemplate, visionService, mock(TranscriptionService.class), embeddingService, fileMetadataRepository);
 
   private final UUID chunkId = UUID.randomUUID();
 
   @BeforeEach
-  void setTopic() {
+  void setUp() {
     // Normally injected from application.properties.
     ReflectionTestUtils.setField(orchestrationService, "pipelineEventsTopic", "cortex.pipeline.events");
+    FileMetadata file = new FileMetadata(); // the builder wants every non-null column; the listener reads only the status
+    file.setFileStatus(FileStatusEnum.PROCESSING);
+    when(fileMetadataRepository.findById(any())).thenReturn(Optional.of(file));
   }
 
   @Test
@@ -78,6 +88,10 @@ class OrchestrationServiceSendTest {
         .orElse(null);
     assertThat(trigger).as("a CompletionTriggerLostException in the thrown chain").isNotNull();
     assertThat(trigger.getCause()).isInstanceOf(KafkaException.class).hasMessage("broker unreachable");
+
+    // Not failed: the chunk is embedded, and the sweep completes the file (failed-states, Decisions).
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+    assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
   }
 
   @Test
