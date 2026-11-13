@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -177,6 +180,33 @@ class MediaJobBoundaryTest {
     assertThat(error.getLoggerName()).as("logged by the boundary").isEqualTo(BackgroundTask.class.getName());
     assertThat(error.getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
     assertThat(escaped.get()).as("nothing escapes onto the pool thread").isNull();
+  }
+
+  @Test
+  void aJobForATerminalFile_neverProbes() throws Exception {
+    // ---- Arrange: the file failed while its job waited in the queue ----
+    UUID fileId = UUID.randomUUID();
+    FileMetadata file = uploadedFile(fileId);
+    file.setFileStatus(FileStatusEnum.FOR_CLEANUP);
+    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn("http://127.0.0.1:9/media.mp4");
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(file));
+
+    // ---- Act ----
+    consumer.consume(FileIngestionEventDTO.builder()
+        .fileId(fileId)
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .userId("user-1")
+        .build());
+
+    ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
+    pool.shutdown();
+    assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).as("the job finished").isTrue();
+
+    // ---- Assert: no probe (its first act is PROBE_STARTED), no marking, nothing above INFO ----
+    verifyNoInteractions(kafkaTemplate);
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+    assertThat(captured.list).as("lines above INFO")
+        .noneMatch(logged -> logged.getLevel().isGreaterOrEqual(Level.WARN));
   }
 
   @Test

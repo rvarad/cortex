@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, brick 5 2026-11-12. Next: brick 6. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12. Next: brick 7. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -218,7 +218,7 @@ passed in as a parameter.
 **DoD:** In ingestion's `MediaChunkRepositoryTest`: a chunk that both queries find while
 its file is `COMPLETED` is found by neither once the file is `FOR_CLEANUP` or `FAILED`.
 
-#### 6. The media job fails its file — ⬜
+#### 6. The media job fails its file — ✅
 
 At the top of the job, outside its `finally` (so the job's own threads have stopped), a
 failure other than a lost trigger marks the file: a conditional update from a status
@@ -240,6 +240,13 @@ in the code: a job that fails before cleanup's sweep leaves its last chunk unque
 late watcher queues it after `finally` clears the queue, and the dispatcher, still in its
 loop, uploads it. That chunk of a failed file gets a GCS object, a `media_chunk` row and
 an embedding. If a test shows it, the `finally` waits for both helpers.
+
+**Checked 2026-11-12:** seen, 3 runs of 3. A last chunk that failed twice was uploaded a
+third time after the job ended (`theLastChunkFailingTwice_isNotUploadedAgain_afterTheJobEnds`).
+The `finally` now waits for both helpers. That alone moved the third upload into the
+`finally`, because the watcher queued its last chunks when its loop ended. That queueing
+is removed: on success cleanup's sweep already queues them, so it only ever ran for a
+failed job.
 
 #### 7. A failed chunk fails its file; rag skips failed files — ⬜
 

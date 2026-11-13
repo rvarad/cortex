@@ -25,6 +25,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
@@ -100,22 +101,64 @@ public class MediaProcessingService {
   private final Semaphore uploadSlots = new Semaphore(MAX_CONCURRENT_UPLOADS);
   private final Semaphore normalisationSlots = new Semaphore(MAX_CONCURRENT_NORMALISATIONS);
 
+  /** What the user reads when a file fails by an error (failed-states, Decisions). */
+  private static final String FAILED_BY_ERROR_MESSAGE =
+      "Processing stopped because of an error on our side. Delete this file and upload it again.";
+
   /**
    * Runs one media job. Throws whatever goes wrong: the caller wraps this in BackgroundTask, the
-   * job's boundary, which is the one place its failures are reported (ADR-0014).
+   * job's boundary, which is the one place its failures are reported (ADR-0014). A failure fails the
+   * file first, here: after runJob's finally, so the job's own threads have stopped.
    */
   public void processMedia(String objectName, UUID fileId, String userId) throws Exception {
+    try {
+      runJob(objectName, fileId, userId);
+    } catch (CompletionTriggerLostException e) {
+      throw e; // Not failed: its work is saved, and the sweep completes the file (failed-states, Decisions).
+    } catch (Exception e) {
+      failFile(fileId, e);
+      throw e;
+    }
+  }
+
+  /**
+   * Marks the file failed and, when that moved it, puts PIPELINE_FAILED on its timeline. The status
+   * is written here, not by the event's consumer: it must not depend on Kafka.
+   */
+  private void failFile(UUID fileId, Exception failure) {
+    try {
+      if (fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("Job failed, but the file is already terminal or deleted: not marked");
+        return;
+      }
+    } catch (RuntimeException e) { // Suppressed, never thrown: it must not replace the job's own failure.
+      failure.addSuppressed(e);
+      return;
+    }
+    sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+        .eventType(PipelineEventEnum.PIPELINE_FAILED).message(FAILED_BY_ERROR_MESSAGE).build());
+  }
+
+  private void runJob(String objectName, UUID fileId, String userId) throws Exception {
     log.info("Beginning chunking for file: {}", objectName);
 
     MediaProcessingContext ctx = null;
     Process ffmpegProcess = null;
     Thread normalisationThread = null;
+    FutureTask<Void> watcher = null;
+    FutureTask<Void> dispatcher = null;
 
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
       FileMetadata fileMetadata = fileMetadataRepository.findById(fileId)
           .orElseThrow(() -> new IllegalStateException("File metadata not found for objectName: " + objectName));
+
+      // Failed or rejected while this job waited in the queue: there is nothing left to do.
+      if (fileMetadata.getFileStatus().isTerminal()) {
+        log.info("File is already {}: job not run", fileMetadata.getFileStatus());
+        return;
+      }
 
       MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl, fileId);
       if (manifestDTO.isCorrupted()) {
@@ -238,12 +281,12 @@ public class MediaProcessingService {
       }
 
       // Tasks the job waits for (ADR-0014, 2026-10-16): a failure comes back to it through get().
-      FutureTask<Void> watcher = new FutureTask<>(() -> {
+      watcher = new FutureTask<>(() -> {
         MDC.put("fileId", fileId.toString()); // a new thread has no MDC
         startDirectoryWatcher(processContext);
         return null;
       });
-      FutureTask<Void> dispatcher = new FutureTask<>(() -> {
+      dispatcher = new FutureTask<>(() -> {
         MDC.put("fileId", fileId.toString());
         startUploadDispatcher(processContext);
         return null;
@@ -308,6 +351,11 @@ public class MediaProcessingService {
         }
         ctx.getUploadQueue().clear();
         ctx.getIsRunning().set(false);
+        // The watcher can queue a chunk on its last pass, so the queue is cleared again once it has
+        // stopped: nothing of this job uploads after the job ends.
+        awaitStopped(watcher);
+        ctx.getUploadQueue().clear();
+        awaitStopped(dispatcher); // not running, nothing queued: it leaves its loop within one poll
         // shortcut: waits for every job's uploads; correct while one file is processed at a time.
         // A per-job count replaces it (per-job-upload-wait.md).
         uploadSlots.acquireUninterruptibly(MAX_CONCURRENT_UPLOADS);
@@ -695,12 +743,9 @@ public class MediaProcessingService {
         }
       }
 
-      if (previousVideoChunk != null)
-        safeEnqueue(processContext, previousVideoChunk);
-      if (previousAudioChunk != null)
-        safeEnqueue(processContext, previousAudioChunk);
-
-      log.info("Watcher stopped. Final chunks queued for upload");
+      // The last chunks it holds are not queued here: cleanup's sweep queues them on success, and
+      // on a failed job nothing may upload after it ends.
+      log.info("Watcher stopped");
     }
   }
 
@@ -900,6 +945,20 @@ public class MediaProcessingService {
     // file is processed at a time. A per-job count replaces it (per-job-upload-wait.md).
     uploadSlots.acquire(MAX_CONCURRENT_UPLOADS);
     uploadSlots.release(MAX_CONCURRENT_UPLOADS);
+  }
+
+  /** For the job's finally: waits for a helper to end. Null when the job failed before it started. */
+  private static void awaitStopped(Future<Void> helper) {
+    if (helper == null)
+      return;
+    try {
+      helper.get(5, TimeUnit.SECONDS);
+    } catch (ExecutionException e) { // Not rethrown: it is the job's failure, already on its way, or came after it.
+    } catch (TimeoutException e) { // Carry on: a throw here would hide the job's own failure.
+      log.warn("A helper of the job did not stop within 5 s", e);
+    } catch (InterruptedException e) { // Carry on, as above.
+      Thread.currentThread().interrupt();
+    }
   }
 
   /** get() on a finished helper throws its failure, if it had one. */

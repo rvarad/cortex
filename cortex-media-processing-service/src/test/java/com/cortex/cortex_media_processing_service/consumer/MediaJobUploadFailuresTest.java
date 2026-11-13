@@ -9,12 +9,14 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.ProcessBuilder.Redirect;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import org.apache.kafka.common.KafkaException;
@@ -42,6 +45,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -287,6 +291,30 @@ class MediaJobUploadFailuresTest {
   }
 
   @Test
+  void theLastChunkFailingTwice_isNotUploadedAgain_afterTheJobEnds() throws Exception {
+    // ---- Arrange: the last audio chunk never uploads, so the job fails at cleanup's last check.
+    // Its watcher still holds that chunk, and queues it when its loop ends ----
+    AtomicInteger lastChunkUploads = new AtomicInteger();
+    when(gcsStorageService.uploadChunk(anyString(), any(Path.class))).thenAnswer(invocation -> {
+      Path chunk = invocation.getArgument(1);
+      if (chunk.getFileName().toString().equals("audio_chunk_002.wav")) {
+        lastChunkUploads.incrementAndGet();
+        throw new IOException("GCS refuses this chunk");
+      }
+      return "chunks/" + chunk.getFileName();
+    });
+
+    // ---- Act: run the job, then give any thread it left running the time to act ----
+    runTheJob();
+    int whenTheJobEnded = lastChunkUploads.get();
+    Thread.sleep(2_000); // the watcher polls every 0.5 s, the dispatcher every 1 s
+
+    // ---- Assert: once, and cleanup's retry; nothing after the job ended ----
+    assertThat(whenTheJobEnded).as("uploads of the last chunk while the job ran").isEqualTo(2);
+    assertThat(lastChunkUploads.get()).as("uploads of the last chunk, 2 s after the job ended").isEqualTo(2);
+  }
+
+  @Test
   void aFailedProbeCompleteSend_isOneWarn_andTheJobStillChunks() throws Exception {
     // ---- Arrange: only the glass box event after the probe can't be sent ----
     failOnlyTheSendOf(PipelineEventEnum.PROBE_COMPLETE);
@@ -320,6 +348,55 @@ class MediaJobUploadFailuresTest {
     assertThat(error.getFormattedMessage()).as("the media job's boundary").contains("media job");
     assertThat(triggerLostWithCause(error.getThrowableProxy(), "broker unreachable"))
         .as("a CompletionTriggerLostException, with the send's exception under it").isTrue();
+
+    // ---- and the file is not failed: its work is saved, and it stays CHUNKED ----
+    verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+    assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
+  }
+
+  @Test
+  void aFailedReadOfTheHead_failsTheFile_withOneErrorAndOnePipelineFailed() throws Exception {
+    // ---- Arrange: the file is not terminal, so marking it changes its row ----
+    failTheReadOfTheHead();
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES)).thenReturn(1);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: the file is marked, the timeline says so, and the boundary logs it once ----
+    verify(fileMetadataRepository).markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES);
+    assertThat(pipelineEvents()).as("PIPELINE_FAILED events")
+        .filteredOn(event -> event.getEventType() == PipelineEventEnum.PIPELINE_FAILED)
+        .singleElement()
+        .extracting(PipelineEventDTO::getMessage)
+        .isEqualTo("Processing stopped because of an error on our side. Delete this file and upload it again.");
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    assertThat(errors.get(0).getLoggerName()).as("logged by the job's boundary")
+        .isEqualTo(BackgroundTask.class.getName());
+    assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
+  }
+
+  @Test
+  void aMarkingThatThrows_isSuppressed_underTheJobsOwnFailure() throws Exception {
+    // ---- Arrange: the job fails, and so does the write that marks its file ----
+    failTheReadOfTheHead();
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES))
+        .thenThrow(new DataAccessResourceFailureException("database down"));
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, about the job's own failure, with the marking's under it ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    IThrowableProxy logged = errors.get(0).getThrowableProxy();
+    assertThat(logged.getClassName()).as("the job's own failure").isEqualTo(UncheckedIOException.class.getName());
+    assertThat(logged.getSuppressed()).as("the marking's failure, suppressed")
+        .extracting(IThrowableProxy::getMessage).containsExactly("database down");
+    assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
   }
 
   @Test
@@ -374,12 +451,22 @@ class MediaJobUploadFailuresTest {
   }
 
   private List<PipelineEventEnum> pipelineEventsSent() {
+    return pipelineEvents().stream().map(PipelineEventDTO::getEventType).toList();
+  }
+
+  private List<PipelineEventDTO> pipelineEvents() {
     ArgumentCaptor<Object> sent = ArgumentCaptor.forClass(Object.class);
     verify(kafkaTemplate, atLeastOnce()).send(any(), any(), sent.capture());
     return sent.getAllValues().stream()
         .filter(PipelineEventDTO.class::isInstance)
-        .map(event -> ((PipelineEventDTO) event).getEventType())
+        .map(PipelineEventDTO.class::cast)
         .toList();
+  }
+
+  /** The read that looks for the moov atom, after the probe: a failure there fails the job. */
+  private void failTheReadOfTheHead() {
+    doThrow(new UncheckedIOException("readHead failed", new IOException("GCS unreachable")))
+        .when(gcsStorageService).readHead(anyString(), anyInt());
   }
 
   private List<ILoggingEvent> linesAt(Level level) {

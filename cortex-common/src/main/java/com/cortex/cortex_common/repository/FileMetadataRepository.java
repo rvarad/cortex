@@ -50,6 +50,13 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
   int markRejected(@Param("fileId") UUID fileId, @Param("reason") UploadRejectReasonEnum reason,
       @Param("fileSize") Long fileSize, @Param("terminal") Collection<FileStatusEnum> terminal);
 
+  // Failed, its data not yet removed: the sweep's to-do list.
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.FOR_CLEANUP "
+      + "WHERE f.id = :fileId AND f.fileStatus NOT IN :terminal")
+  int markForCleanup(@Param("fileId") UUID fileId, @Param("terminal") Collection<FileStatusEnum> terminal);
+
   // Targeted update of the chunking result only — deliberately does NOT touch
   // playbackObjectName, which the normalization thread owns via its own update.
   // Disjoint columns => the two writers can't clobber each other, in any order.

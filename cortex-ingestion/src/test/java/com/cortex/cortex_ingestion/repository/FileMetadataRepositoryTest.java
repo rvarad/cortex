@@ -88,6 +88,19 @@ class FileMetadataRepositoryTest {
   }
 
   @Test
+  void markForCleanup_changesAProcessingFile_butLeavesACompletedOne() {
+    UUID processing = saved(FileStatusEnum.PROCESSING);
+    UUID completed = saved(FileStatusEnum.COMPLETED);
+
+    assertThat(repo.markForCleanup(processing, FileStatusEnum.TERMINAL_STATUSES)).isEqualTo(1);
+    assertThat(repo.markForCleanup(completed, FileStatusEnum.TERMINAL_STATUSES)).isEqualTo(0);
+
+    entityManager.clear();
+    assertThat(read(processing).getFileStatus()).isEqualTo(FileStatusEnum.FOR_CLEANUP);
+    assertThat(read(completed).getFileStatus()).isEqualTo(FileStatusEnum.COMPLETED);
+  }
+
+  @Test
   void rename_changesOnlyTheName() {
     UUID forCleanup = saved(FileStatusEnum.FOR_CLEANUP);
 
