@@ -3,6 +3,7 @@ package com.cortex.cortex_ingestion.service;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
@@ -19,6 +20,7 @@ import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.model.PlaybackStatusEnum;
+import com.cortex.cortex_common.model.UploadRejectReasonEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
 import com.cortex.cortex_ingestion.model.PipelineEvent;
@@ -45,6 +47,10 @@ public class PipelineEventsService {
 
   private final ObjectMapper objectMapper;
 
+  /** The events the page ends a run on (page.tsx, TERMINAL_EVENTS). */
+  private static final Set<PipelineEventEnum> TERMINAL_EVENTS = Set.of(
+      PipelineEventEnum.PIPELINE_COMPLETE, PipelineEventEnum.PIPELINE_FAILED, PipelineEventEnum.UPLOAD_REJECTED);
+
   public SseEmitter subscribeToEvents(UUID fileId, String userId) throws IOException {
     log.info("[PipelineEventsService] Client subscribed to events for fileId: {}", fileId);
 
@@ -53,11 +59,19 @@ public class PipelineEventsService {
 
     SseEmitter emitter = new SseEmitter(0L);
 
-    sendPreviousEvents(fileId, emitter);
+    List<PipelineEvent> history = sendPreviousEvents(fileId, emitter);
 
     if (file.getFileStatus().isTerminal()) {
       log.info("[PipelineEventsService] File is {}: its run has ended. Closing emitter for fileId: {}",
           file.getFileStatus(), fileId);
+      // Its terminal event is a glass box send and can be lost, while the status was written:
+      // the page then learns the outcome from the row. Not stored (failed-states, brick 8).
+      PipelineEventDTO end = history.stream().anyMatch(event -> TERMINAL_EVENTS.contains(event.getEventType()))
+          ? null
+          : endOfRun(file);
+      if (end != null) {
+        emitter.send(SseEmitter.event().name(end.getEventType().name()).data(end));
+      }
       emitter.complete();
     } else {
       sseEmitterRegistry.addEmitter(fileId, emitter);
@@ -70,7 +84,7 @@ public class PipelineEventsService {
    * Sent before the endpoint returns, so Spring buffers them: a client can't have left yet. What
    * can fail is stored metadata that won't read, and that is a 500 at the boundary.
    */
-  private void sendPreviousEvents(UUID fileId, SseEmitter emitter) throws IOException {
+  private List<PipelineEvent> sendPreviousEvents(UUID fileId, SseEmitter emitter) throws IOException {
     List<PipelineEvent> historicalEvents = pipelineEventRepository.findByFileIdOrderByCreatedAtAsc(fileId);
 
     for (PipelineEvent event : historicalEvents) {
@@ -89,6 +103,31 @@ public class PipelineEventsService {
 
       emitter.send(SseEmitter.event().name(event.getEventType().name()).data(eventDTO));
     }
+    return historicalEvents;
+  }
+
+  /** The terminal event a file's status implies, or null when there is none to make up. */
+  private static PipelineEventDTO endOfRun(FileMetadata file) {
+    return switch (file.getFileStatus()) {
+      // An error: rule 1 stores its own PIPELINE_FAILED with the status, so it is never missing.
+      case FOR_CLEANUP, FAILED -> PipelineEventDTO.builder().fileId(file.getId())
+          .eventType(PipelineEventEnum.PIPELINE_FAILED).message(PipelineEventEnum.FAILED_BY_ERROR_MESSAGE).build();
+      case REJECTED -> PipelineEventDTO.builder().fileId(file.getId())
+          .eventType(PipelineEventEnum.UPLOAD_REJECTED).message(rejectedMessage(file.getRejectionReason())).build();
+      default -> null; // PIPELINE_COMPLETE is stored with COMPLETED, in one transaction
+    };
+  }
+
+  /** No limits in the text: they are config in two services. */
+  private static String rejectedMessage(UploadRejectReasonEnum reason) {
+    if (reason == null) {
+      return "This file cannot be processed.";
+    }
+    return switch (reason) {
+      case TOO_BIG -> "This file is too large to be processed.";
+      case TOO_LONG -> "This file is too long to be processed.";
+      case CORRUPTED -> "This file appears to be corrupted and cannot be processed.";
+    };
   }
 
   @Transactional

@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, brick 7 2026-11-13. Next: brick 8. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13. Next: brick 9. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -38,8 +38,6 @@ still processing.
   stays: a job stalls for minutes before its next critical send fails it.
 - **The failure's cause in the UI.** The user sees one of two fixed messages; the
   exception stays in the log (ADR-0014).
-- **A file page already open when `PIPELINE_FAILED` is lost.** It spins until reloaded;
-  brick 8 fixes only the reload.
 - **Conversations that attached a file that later fails.** Not checked what the agent
   does once that file's chunks are gone.
 - **Deleting `pipeline-status.tsx`.** Nothing imports it; separate cleanup.
@@ -262,7 +260,7 @@ report, one `PIPELINE_FAILED`; a second chunk of the same file fails → no seco
 delivered again; a chunk of a `FOR_CLEANUP` file makes no vision, transcription or
 embedding call; the `EMBEDDING_COMPLETE` send fails → the file is not marked.
 
-#### 8. The file page always learns how the run ended — ⬜
+#### 8. The file page always learns how the run ended — ✅
 
 When a page connects to a terminal file whose history has no terminal event, the SSE
 endpoint sends one, built from the row, before it closes: `PIPELINE_FAILED` with the
@@ -312,12 +310,19 @@ run the completion check again; if the file is still not complete, set `FOR_CLEA
 and store `PIPELINE_FAILED` with the no-progress message, in one transaction, through
 the path that broadcasts to open pages.
 
+Each run also checks the pages that are open: for each file in `SseEmitterRegistry`
+whose row is failed or rejected, it sends brick 8's event, built from the row, and
+closes the stream. A page open when `PIPELINE_FAILED` was lost (Kafka down when the
+file failed, which is when that loss is likely) then stops spinning within one
+interval.
+
 **DoD:** Tests: a file with no activity for N and chunks left is `FOR_CLEANUP` with one
 `PIPELINE_FAILED`; a file with all chunks `COMPLETED` and playback `READY` becomes
 `COMPLETED`; a file with recent activity is left alone; nothing runs before N after
-startup. In the browser, a file whose media container was stopped mid-job shows Failed
-with the no-progress message after N plus the interval, and no log has an ERROR line
-for it.
+startup; an open stream for a `FOR_CLEANUP` file gets `PIPELINE_FAILED` and is closed,
+and one for a file still processing gets nothing. In the browser, a file whose media
+container was stopped mid-job shows Failed with the no-progress message after N plus
+the interval, and no log has an ERROR line for it.
 
 #### 12. Rule 2: a failed file is cleaned — ⬜
 
@@ -380,9 +385,11 @@ while its job still writes.
 2. **No progress.** Upload a file and stop the media container while it chunks. After N
    plus the interval the card shows Failed with the no-progress message, and no log has
    an ERROR line for the file. Cleanup follows as in step 1.
-3. **Kafka down.** Stop Kafka while a file chunks, and keep it stopped until the card
-   shows Failed. Start Kafka and reload the file's page: "Pipeline failed" with the
-   error message, not "connection lost". No objects for the file are left after cleanup.
+3. **Kafka down.** Open the file's page, then stop Kafka while the file chunks, and keep
+   it stopped until the card shows Failed. Without a reload, within one interval the
+   open page shows "Pipeline failed" with the error message and stops spinning. Start
+   Kafka and reload it: the same, not "connection lost". No objects for the file are
+   left after cleanup.
 4. **A completed file stays completed.** A file that completed before step 1 is still
    `COMPLETED` after 2N, with its objects and rows.
 5. **A lost trigger.** Set a completed file back to `PROCESSING` in psql. After N plus
