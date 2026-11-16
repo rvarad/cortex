@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13. Next: brick 9. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Next: brick 10. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -272,7 +272,7 @@ one. It is not stored.
 shows "Pipeline failed" with the error message, and no "connection lost" line. The same
 for a rejected file whose `UPLOAD_REJECTED` row was deleted. A test covers both.
 
-#### 9. Stages that never completed stop spinning — ⬜
+#### 9. Stages that never completed stop spinning — ✅
 
 On the file page, once the run has ended, a stage or chunk step that started and never
 completed shows warned ("did not complete"), as the probe stage already does. Frontend

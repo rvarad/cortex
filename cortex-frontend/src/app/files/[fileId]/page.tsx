@@ -136,14 +136,20 @@ function readManifest(events: PipelineStreamEvent[]): {
   return { probed: false, manifest: { hasVideo: true, hasAudio: true } };
 }
 
+/** A step that started and, the run having ended, never completed: no spinner, no pulse. */
+const WARNED_BADGE = "border-amber-500/50 text-amber-500 bg-amber-500/5";
+
 function ChunkCard({
   index,
   chunk,
   manifest,
+  ended,
 }: {
   index: number;
   chunk?: ChunkState;
   manifest: MediaManifest;
+  /** The run has ended: what is still running never will finish. */
+  ended: boolean;
 }) {
   // Undiscovered chunks are the predicted ones: the probe told us how many to
   // expect, but no event has arrived for this slot yet.
@@ -159,6 +165,8 @@ function ChunkCard({
             ? "border-border bg-background text-muted-foreground"
             : chunk.embeddingStatus === "complete"
             ? "border-green-500 bg-green-500/10 text-green-500"
+            : ended
+            ? "border-amber-500 bg-amber-500/10 text-amber-500"
             : "border-primary bg-primary/10 text-primary"
         )}
       >
@@ -166,6 +174,8 @@ function ChunkCard({
           <div className="h-4 w-4 rounded-full bg-border" />
         ) : chunk.embeddingStatus === "complete" ? (
           <CheckCircle2 className="h-4 w-4" />
+        ) : ended ? (
+          <AlertTriangle className="h-4 w-4" />
         ) : (
           <Loader2 className="h-4 w-4 animate-spin" />
         )}
@@ -197,7 +207,9 @@ function ChunkCard({
                   chunk?.transcriptionStatus === "complete"
                     ? "border-green-500/50 text-green-500 bg-green-500/5"
                     : chunk?.transcriptionStatus === "processing"
-                    ? "border-primary/50 text-primary animate-pulse"
+                    ? ended
+                      ? WARNED_BADGE
+                      : "border-primary/50 text-primary animate-pulse"
                     : "text-muted-foreground/50 border-border"
                 )}
               >
@@ -205,7 +217,9 @@ function ChunkCard({
                 {chunk?.transcriptionStatus === "complete"
                   ? "Transcribed"
                   : chunk?.transcriptionStatus === "processing"
-                  ? "Listening..."
+                  ? ended
+                    ? "Not transcribed"
+                    : "Listening..."
                   : "Audio"}
               </Badge>
             )}
@@ -217,7 +231,9 @@ function ChunkCard({
                   chunk?.visionStatus === "complete"
                     ? "border-green-500/50 text-green-500 bg-green-500/5"
                     : chunk?.visionStatus === "processing"
-                    ? "border-primary/50 text-primary animate-pulse"
+                    ? ended
+                      ? WARNED_BADGE
+                      : "border-primary/50 text-primary animate-pulse"
                     : "text-muted-foreground/50 border-border"
                 )}
               >
@@ -225,7 +241,9 @@ function ChunkCard({
                 {chunk?.visionStatus === "complete"
                   ? "Analyzed"
                   : chunk?.visionStatus === "processing"
-                  ? "Watching..."
+                  ? ended
+                    ? "Not analyzed"
+                    : "Watching..."
                   : "Vision"}
               </Badge>
             )}
@@ -257,18 +275,22 @@ function ChunkCard({
               </p>
               <div className="text-sm p-3 rounded-lg bg-background/50 border border-border/50 min-h-[80px]">
                 {!isDiscovered ? (
-                  <SkeletonLines />
+                  <NotYet ended={ended} />
                 ) : chunk.visualSummary ? (
                   <span className="text-foreground/90">
                     {chunk.visualSummary}
                   </span>
                 ) : chunk.visionStatus === "processing" ? (
-                  <span className="text-muted-foreground/50 flex items-center gap-2 italic">
-                    <Loader2 className="h-3 w-3 animate-spin" /> Generating
-                    description...
-                  </span>
+                  ended ? (
+                    <DidNotComplete />
+                  ) : (
+                    <span className="text-muted-foreground/50 flex items-center gap-2 italic">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Generating
+                      description...
+                    </span>
+                  )
                 ) : (
-                  <SkeletonLines />
+                  <NotYet ended={ended} />
                 )}
               </div>
             </div>
@@ -281,7 +303,7 @@ function ChunkCard({
               </p>
               <div className="text-sm p-3 rounded-lg bg-background/50 border border-border/50 min-h-[80px]">
                 {!isDiscovered ? (
-                  <SkeletonLines />
+                  <NotYet ended={ended} />
                 ) : chunk.transcript ? (
                   <span className="text-foreground/90 italic">
                     &ldquo;{chunk.transcript}&rdquo;
@@ -291,12 +313,16 @@ function ChunkCard({
                     [No speech detected]
                   </span>
                 ) : chunk.transcriptionStatus === "processing" ? (
-                  <span className="text-muted-foreground/50 flex items-center gap-2 italic">
-                    <Loader2 className="h-3 w-3 animate-spin" /> Transcribing
-                    audio...
-                  </span>
+                  ended ? (
+                    <DidNotComplete />
+                  ) : (
+                    <span className="text-muted-foreground/50 flex items-center gap-2 italic">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Transcribing
+                      audio...
+                    </span>
+                  )
                 ) : (
-                  <SkeletonLines />
+                  <NotYet ended={ended} />
                 )}
               </div>
             </div>
@@ -304,6 +330,23 @@ function ChunkCard({
         </div>
       </Card>
     </div>
+  );
+}
+
+/** Not started yet: a pulsing placeholder while the run goes on; once it has ended, it never will. */
+function NotYet({ ended }: { ended: boolean }) {
+  return ended ? (
+    <span className="text-muted-foreground/50 italic">Not processed</span>
+  ) : (
+    <SkeletonLines />
+  );
+}
+
+function DidNotComplete() {
+  return (
+    <span className="text-amber-500/80 flex items-center gap-2 italic">
+      <AlertTriangle className="h-3 w-3" /> Did not complete
+    </span>
   );
 }
 
@@ -501,11 +544,14 @@ export default function GlassboxTimelinePage() {
       state: "done",
     });
   } else if (seen.has("NORMALISATION_STARTED")) {
+    // Like the probe: once the run has ended, a step that never completed stops spinning.
     stages.push({
       key: "normalisation",
-      label: "Generating playback version",
+      label: isTerminated
+        ? "Playback version did not complete"
+        : "Generating playback version",
       Icon: Film,
-      state: "running",
+      state: isTerminated ? "warned" : "running",
     });
   }
 
@@ -520,9 +566,9 @@ export default function GlassboxTimelinePage() {
   } else if (seen.has("CHUNKING_STARTED")) {
     stages.push({
       key: "chunking",
-      label: "Chunking media",
+      label: isTerminated ? "Chunking did not complete" : "Chunking media",
       Icon: Scissors,
-      state: "running",
+      state: isTerminated ? "warned" : "running",
     });
   }
 
@@ -615,7 +661,12 @@ export default function GlassboxTimelinePage() {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.3, delay: Math.min(i, 10) * 0.05 }}
               >
-                <ChunkCard index={i} chunk={chunks[i]} manifest={manifest} />
+                <ChunkCard
+                  index={i}
+                  chunk={chunks[i]}
+                  manifest={manifest}
+                  ended={isTerminated}
+                />
               </motion.div>
             ))}
           </AnimatePresence>
