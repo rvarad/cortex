@@ -169,21 +169,63 @@ public class PipelineEventsService {
     }
   }
 
-  private void checkPipelineCompletion(UUID fileId) throws JsonProcessingException {
+  /**
+   * Rule 1 of the sweep, for one silent file: completes it if all its work is saved, else fails it
+   * (failed-states, Decisions). One transaction: the row lock, the status and the stored event.
+   */
+  @Transactional
+  public void failIfStuck(UUID fileId) {
+    try {
+      if (checkPipelineCompletion(fileId)) {
+        return; // its work was all saved, only the last trigger was lost: completed, not failed
+      }
+    } catch (JsonProcessingException e) { // Unchecked, as in processNewEvent: the transaction rolls back.
+      throw new IllegalStateException("Could not complete fileId " + fileId, e);
+    }
+    if (fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES) == 0) {
+      return; // its run ended, or it was deleted, since the sweep's query
+    }
+    // WARN, not ERROR: no exception, nothing of ours failed in a way a stack trace explains.
+    log.warn("[PipelineEventsService] No activity for too long: marked failed");
+    // Stored in this transaction, with the status: so a failed file with no PIPELINE_FAILED was
+    // failed by an error (brick 8). processNewEvent broadcasts it to open pages after the commit.
+    processNewEvent(PipelineEventDTO.builder().fileId(fileId)
+        .eventType(PipelineEventEnum.PIPELINE_FAILED)
+        .message(PipelineEventEnum.FAILED_BY_NO_PROGRESS_MESSAGE)
+        .build());
+  }
+
+  /**
+   * Ends the open pages of files whose run has ended but whose terminal event they never got (its
+   * glass box send was lost): sends brick 8's event, built from the row, and closes the stream.
+   */
+  public void endOpenStreamsOfEndedFiles() {
+    for (UUID fileId : sseEmitterRegistry.openFileIds()) {
+      FileMetadata file = fileMetadataRepository.findById(fileId).orElse(null);
+      PipelineEventDTO end = file == null ? null : endOfRun(file); // null while it still runs
+      if (end != null) {
+        sseEmitterRegistry.broadcast(end);
+        sseEmitterRegistry.completeEmitters(fileId);
+      }
+    }
+  }
+
+  /** True when this call completed the file. */
+  private boolean checkPipelineCompletion(UUID fileId) throws JsonProcessingException {
 
     FileMetadata file = fileMetadataRepository.findByIdForUpdate(fileId).orElse(null);
 
     if (file == null) {
       log.warn("[PipelineEventsService] File Metadata not found for fileId: {}", fileId);
-      return;
+      return false;
     }
 
     // Under the row lock: a file that failed or was rejected while this event waited stays so.
     if (file.getFileStatus().isTerminal())
-      return;
+      return false;
 
     if (file.getTotalChunks() == null || file.getTotalChunks() == 0)
-      return;
+      return false;
 
     if (file.getFileStatus() == FileStatusEnum.CHUNKED) {
       file.setFileStatus(FileStatusEnum.PROCESSING);
@@ -223,7 +265,9 @@ public class PipelineEventsService {
           sseEmitterRegistry.completeEmitters(fileId);
         }
       });
+      return true;
     }
+    return false;
   }
 
 }

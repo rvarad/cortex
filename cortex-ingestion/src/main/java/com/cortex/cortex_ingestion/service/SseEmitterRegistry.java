@@ -1,6 +1,7 @@
 package com.cortex.cortex_ingestion.service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -53,6 +54,11 @@ public class SseEmitterRegistry {
         removeConnection(event.getFileId(), emitter);
       }
     });
+  }
+
+  /** The files that have a page open now. A copy: the registry changes as pages come and go. */
+  public Set<UUID> openFileIds() {
+    return Set.copyOf(emitterRegistry.keySet());
   }
 
   public void completeEmitters(UUID fileId) {

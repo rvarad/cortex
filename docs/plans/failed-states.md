@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Next: brick 10. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17. Next: brick 12. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -102,16 +102,57 @@ still processing.
   timeouts (ffmpeg, the model calls, `KafkaSends.WAIT`), which fail the file at once;
   rule 1 only finds files where nothing runs. So a longer N costs storage and wait
   time, not threads.
-- **N is the longest silent gap plus a margin** — queue waits and a video transcode
-  included — and longer than a job takes to fail with Kafka stopped (16 minutes in the
-  failure-boundaries Done when, 2026-10-23). With Kafka down no events arrive, so a
-  shorter N lets rule 2 clean a file while its job still writes. Measured in brick 10,
-  not guessed. A batch larger than the one measured can fail a healthy file; accepted.
-- **`FFMPEG_PROCESSING_TIMEOUT_M` is not above N** — a running transcode is silent, so
-  that timeout is the floor for N. Brick 10 lowers it to fit the longest chunking or
-  transcode it sees, so N can come down with it.
+- **N is a guess from the code's limits, not measured** (2026-11-17) — measuring needs
+  real uploads, and every one costs model calls. Two values:
+  - **`UPLOADED`: 2 hours.** A file waits in the media queue as `UPLOADED`, with no
+    events. The executor runs 2 jobs and queues 5 (`MediaProcessingConfig`), so the 7th
+    file of a batch waits for 3 jobs. A job waits for its chunking and its transcode,
+    and both ffmpeg runs stop at `FFMPEG_PROCESSING_TIMEOUT_M` (30 minutes); with the
+    upload drain, a job is about 35 minutes at most. 3 × 35 ≈ 105 minutes, under 2
+    hours. An 8th file waits in Kafka, behind 4 jobs, and can fail. The cost of 2
+    hours: a file whose start event was lost, or whose job died, takes up to 2 hours to
+    fail. Both are rare.
+  - **Everything else — `CHUNKED`, `PROCESSING`, rules 2 and 3, the first run after
+    startup: 45 minutes.** A running transcode is silent for up to
+    `FFMPEG_PROCESSING_TIMEOUT_M` (30 minutes); 15 minutes is the margin. The data has
+    this case: the longest gap inside a run is 4 minutes, `EMBEDDING_COMPLETE` →
+    `NORMALISATION_COMPLETE`, a file in `PROCESSING` waiting for its playback version
+    (2026-11-17, 12 files). Rag needs no value of its own: chunks are 60 s (15 for the
+    longest file), rag runs 3 at a time, and a video chunk takes about 40 s in the data,
+    so even 7 files in rag at once wait about 23 minutes. 45 minutes is also above the
+    16 minutes a job takes to fail with Kafka stopped (failure-boundaries Done when,
+    2026-10-23), so rule 2 never cleans a file while its job still writes.
+
+  A batch larger than these allow can fail a healthy file; accepted.
+
+  **What the guess depends on:**
+  - the executor's 2 jobs and queue of 5;
+  - 2 normalisation slots (`MAX_CONCURRENT_NORMALISATIONS`), as many as jobs, so no file
+    waits silently for a slot;
+  - `FFMPEG_PROCESSING_TIMEOUT_M` at 30 minutes;
+  - 60 s chunks, and rag's 3 partitions.
+
+  Change one of these, and N is guessed again.
+- **`FFMPEG_PROCESSING_TIMEOUT_M` stays 30 minutes** — it is the floor for the 45.
+  Lowering it without measuring can fail real long files.
+- **The guess is checked from data we already have.** After normal use, this gives the
+  longest silent gaps inside a run. A gap that starts at a terminal event is left out:
+  it is the time between two runs of one file (1 day for one file in the dev data). A
+  gap that ends at `PROBE_STARTED` is a queue wait, so compare it to the `UPLOADED` N,
+  and the rest to 45 minutes. If one comes close to its N, raise N in config:
+  ```sql
+  SELECT file_id, gap, prev_type, event_type
+  FROM (SELECT file_id, event_type,
+               lag(event_type) OVER w AS prev_type,
+               created_at - lag(created_at) OVER w AS gap
+        FROM pipeline_events
+        WINDOW w AS (PARTITION BY file_id ORDER BY created_at)) t
+  WHERE prev_type NOT IN ('PIPELINE_COMPLETE', 'PIPELINE_FAILED', 'UPLOAD_REJECTED')
+  ORDER BY gap DESC
+  LIMIT 10;
+  ```
 - **The sweep runs every 5 minutes.** One run is one indexed query; the interval only
-  adds delay. N and the interval are config properties.
+  adds delay. The two N values and the interval are config properties.
 - **Reads hide `FOR_DELETION` with `@SQLRestriction` on `FileMetadata`** — every JPA
   read, now and later, treats the row as gone; a filter at each read fails when one
   read forgets it. The sweep uses native SQL, which the restriction does not touch.
@@ -287,26 +328,18 @@ completed file's page looks as before.
 **When this slice is done:** a file that stops making progress fails by itself, and a
 failed file's data is removed. Neither depends on an event arriving.
 
-#### 10. Measure the longest silent gap — ⬜
+#### 10. Measure the longest silent gap — dropped 2026-11-17
 
-From the stored events, find the longest time a healthy file goes without a pipeline
-event: the largest gap between consecutive `created_at` values of one file. Cases:
-seven files uploaded at once (two run, five wait in the media queue); the longest
-allowed file (900 s) that needs a video transcode; two files whose chunks wait in rag at
-the same time; and, with Kafka stopped, the time from a job's last event to its failure.
-Five runs each. The result goes to `docs/findings/`; N comes from it. Also record the
-longest chunking and transcode, and lower `FFMPEG_PROCESSING_TIMEOUT_M` to fit them
-with a margin, not above N.
+Every measuring run costs model calls. N is a guess instead; see Decisions.
 
-**DoD:** A findings file with the longest gap seen in each case, N with its margin, and
-the new ffmpeg timeout. The longest file still chunks and transcodes under it.
-
-#### 11. Rule 1: a stuck file fails — ⬜
+#### 11. Rule 1: a stuck file fails — ✅
 
 Ingestion's first scheduled job: `@EnableScheduling`, a first run N after startup, then
-one run every 5 minutes. N and the interval are config properties. A migration adds an index on `pipeline_events (file_id,
-created_at)`. For `UPLOADED`, `CHUNKED` and `PROCESSING` files with no activity for N:
-run the completion check again; if the file is still not complete, set `FOR_CLEANUP`
+one run every 5 minutes. The two N values (2 hours for `UPLOADED`, 45 minutes for the
+rest) and the interval are config properties. A migration adds an index on
+`pipeline_events (file_id, created_at)`. For `UPLOADED` files with no activity for 2
+hours, and `CHUNKED` and `PROCESSING` files with none for 45 minutes: run the
+completion check again; if the file is still not complete, set `FOR_CLEANUP`
 and store `PIPELINE_FAILED` with the no-progress message, in one transaction, through
 the path that broadcasts to open pages.
 
@@ -318,11 +351,12 @@ interval.
 
 **DoD:** Tests: a file with no activity for N and chunks left is `FOR_CLEANUP` with one
 `PIPELINE_FAILED`; a file with all chunks `COMPLETED` and playback `READY` becomes
-`COMPLETED`; a file with recent activity is left alone; nothing runs before N after
+`COMPLETED`; a file with recent activity is left alone; an `UPLOADED` file silent for
+an hour is left alone, a `PROCESSING` one is failed; nothing runs before N after
 startup; an open stream for a `FOR_CLEANUP` file gets `PIPELINE_FAILED` and is closed,
-and one for a file still processing gets nothing. In the browser, a file whose media
-container was stopped mid-job shows Failed with the no-progress message after N plus
-the interval, and no log has an ERROR line for it.
+and one for a file still processing gets nothing. In the browser, with both N values set
+short, a file whose media container was stopped mid-job shows Failed with the
+no-progress message after N plus the interval, and no log has an ERROR line for it.
 
 #### 12. Rule 2: a failed file is cleaned — ⬜
 
@@ -372,7 +406,8 @@ it ends deleted, not `FAILED`.
 
 In dev, with `docker compose up -d postgres redis kafka` and the services on the dev
 profile. The webhook is called by hand: Pub/Sub can't reach localhost. Steps 1, 2, 4 and
-5 use a short N and a short MP4 that plays as it is (no transcode, so no long silent
+5 use a short N (both values: a file stays `UPLOADED` until chunking ends, so step 2
+needs the short `UPLOADED` one) and a short MP4 that plays as it is (no transcode, so no long silent
 step). Steps 3, 6 and 7 use the real N: a short one there can clean or delete a file
 while its job still writes.
 
@@ -397,5 +432,6 @@ while its job still writes.
 6. **Delete during processing.** Delete a file while it chunks. The card goes at once;
    after the job ends and N plus the interval, the bucket has no objects for it and no
    rows remain.
-7. **Queues don't fail healthy files.** Upload seven files at once. All seven complete.
-   Five runs.
+7. **Queues don't fail healthy files.** Upload three files at once; the third waits
+   behind a running job. All three complete. One run: each run costs model calls. Then
+   run the gap query in Decisions and check no gap is close to its N.

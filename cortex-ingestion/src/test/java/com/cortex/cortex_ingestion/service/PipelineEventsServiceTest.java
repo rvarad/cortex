@@ -4,17 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -26,6 +30,7 @@ import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.model.PlaybackStatusEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_common.repository.MediaChunkRepository;
+import com.cortex.cortex_ingestion.model.PipelineEvent;
 import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -58,8 +63,12 @@ class PipelineEventsServiceTest {
 
   private final MediaChunkRepository mediaChunkRepository = mock(MediaChunkRepository.class);
 
-  private final PipelineEventsService service = new PipelineEventsService(mock(SseEmitterRegistry.class),
-      mock(PipelineEventRepository.class), fileMetadataRepository, mediaChunkRepository, objectMapper);
+  private final SseEmitterRegistry sseEmitterRegistry = mock(SseEmitterRegistry.class);
+
+  private final PipelineEventRepository pipelineEventRepository = mock(PipelineEventRepository.class);
+
+  private final PipelineEventsService service = new PipelineEventsService(sseEmitterRegistry,
+      pipelineEventRepository, fileMetadataRepository, mediaChunkRepository, objectMapper);
 
   @BeforeEach
   void setUp() {
@@ -122,5 +131,95 @@ class PipelineEventsServiceTest {
     // ---- Assert ----
     assertThat(file.getFileStatus()).isEqualTo(FileStatusEnum.FOR_CLEANUP);
     verify(fileMetadataRepository, never()).save(any());
+  }
+
+  // ---- Rule 1 (failed-states, brick 11) ----
+
+  @Test
+  void failIfStuck_onAFileWithChunksLeft_marksIt_andSavesOnePipelineFailed() {
+    UUID fileId = UUID.randomUUID();
+    when(fileMetadataRepository.findByIdForUpdate(fileId))
+        .thenReturn(Optional.of(file(fileId, FileStatusEnum.PROCESSING, 3)));
+    when(mediaChunkRepository.countByFileIdAndStatus(fileId, MediaChunk.Status.COMPLETED)).thenReturn(2L);
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES)).thenReturn(1);
+
+    service.failIfStuck(fileId);
+
+    verify(fileMetadataRepository).markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES);
+    assertThat(savedEvents()).singleElement().satisfies(event -> {
+      assertThat(event.getEventType()).isEqualTo(PipelineEventEnum.PIPELINE_FAILED);
+      assertThat(event.getMessage()).isEqualTo(PipelineEventEnum.FAILED_BY_NO_PROGRESS_MESSAGE);
+    });
+  }
+
+  @Test
+  void failIfStuck_onAnUploadedFile_marksIt_andSavesOnePipelineFailed() {
+    // No totalChunks until chunking completes: the completion check can never complete it.
+    UUID fileId = UUID.randomUUID();
+    when(fileMetadataRepository.findByIdForUpdate(fileId))
+        .thenReturn(Optional.of(file(fileId, FileStatusEnum.UPLOADED, null)));
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES)).thenReturn(1);
+
+    service.failIfStuck(fileId);
+
+    verify(fileMetadataRepository).markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES);
+    assertThat(savedEvents()).extracting(PipelineEvent::getEventType).containsExactly(PipelineEventEnum.PIPELINE_FAILED);
+  }
+
+  @Test
+  void failIfStuck_onAFileWhoseWorkIsAllSaved_completesIt_insteadOfFailingIt() {
+    // Every chunk embedded and playback ready, but the last completion trigger was lost.
+    UUID fileId = UUID.randomUUID();
+    FileMetadata file = file(fileId, FileStatusEnum.PROCESSING, 3);
+    when(fileMetadataRepository.findByIdForUpdate(fileId)).thenReturn(Optional.of(file));
+    when(mediaChunkRepository.countByFileIdAndStatus(fileId, MediaChunk.Status.COMPLETED)).thenReturn(3L);
+
+    service.failIfStuck(fileId);
+
+    assertThat(file.getFileStatus()).isEqualTo(FileStatusEnum.COMPLETED);
+    assertThat(savedEvents()).extracting(PipelineEvent::getEventType).containsExactly(PipelineEventEnum.PIPELINE_COMPLETE);
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+  }
+
+  @Test
+  void endOpenStreamsOfEndedFiles_endsAFailedFilesStream_andLeavesAProcessingOne() {
+    UUID failed = UUID.randomUUID();
+    UUID processing = UUID.randomUUID();
+    when(sseEmitterRegistry.openFileIds()).thenReturn(Set.of(failed, processing));
+    when(fileMetadataRepository.findById(failed)).thenReturn(Optional.of(file(failed, FileStatusEnum.FOR_CLEANUP, 3)));
+    when(fileMetadataRepository.findById(processing))
+        .thenReturn(Optional.of(file(processing, FileStatusEnum.PROCESSING, 3)));
+
+    service.endOpenStreamsOfEndedFiles();
+
+    ArgumentCaptor<PipelineEventDTO> sent = ArgumentCaptor.forClass(PipelineEventDTO.class);
+    verify(sseEmitterRegistry).broadcast(sent.capture());
+    assertThat(sent.getValue().getFileId()).isEqualTo(failed);
+    assertThat(sent.getValue().getEventType()).isEqualTo(PipelineEventEnum.PIPELINE_FAILED);
+    verify(sseEmitterRegistry).completeEmitters(failed);
+    verify(sseEmitterRegistry, never()).completeEmitters(processing);
+  }
+
+  private static FileMetadata file(UUID fileId, FileStatusEnum status, Integer totalChunks) {
+    return FileMetadata.builder()
+        .id(fileId)
+        .fileDisplayName("talk.mp4")
+        .bucketName("cortex-dev-bucket")
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .fileSize(1_000L)
+        .fileStatus(status)
+        .contentType("video/mp4")
+        .userId("user-1")
+        .totalChunks(totalChunks)
+        .playbackStatus(PlaybackStatusEnum.READY)
+        .build();
+  }
+
+  /** Every event the service stored, in order; none is fine, unlike a captor's verify. */
+  private List<PipelineEvent> savedEvents() {
+    return mockingDetails(pipelineEventRepository).getInvocations().stream()
+        .filter(invocation -> invocation.getMethod().getName().equals("save"))
+        .map(invocation -> (PipelineEvent) invocation.getArgument(0))
+        .toList();
   }
 }
