@@ -46,7 +46,12 @@ export default function DashboardPage() {
   // One poll for the whole grid while anything is still moving, instead of an
   // SSE stream per card. The tiles only need coarse status; the fine-grained
   // event stream belongs to the pipeline history view.
+  // On all files, PENDING ones too: a good upload stays PENDING for a few seconds, until its
+  // webhook, and the poll is what makes its card appear once it is UPLOADED.
   const hasUnsettledFiles = files.some((file) => !isSettled(file));
+
+  // A PENDING row is an upload not yet landed: no card. If it never lands, the sweep deletes it.
+  const visibleFiles = files.filter((file) => file.fileStatus !== "PENDING");
 
   useEffect(() => {
     if (!hasUnsettledFiles) return;
@@ -80,7 +85,7 @@ export default function DashboardPage() {
             <Skeleton key={i} className="h-24 rounded-xl" />
           ))}
         </div>
-      ) : files.length === 0 ? (
+      ) : visibleFiles.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -100,7 +105,7 @@ export default function DashboardPage() {
             className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
             layout
           >
-            {files.map((file) => (
+            {visibleFiles.map((file) => (
               <motion.div
                 key={file.fileId}
                 initial={{ opacity: 0, scale: 0.95 }}

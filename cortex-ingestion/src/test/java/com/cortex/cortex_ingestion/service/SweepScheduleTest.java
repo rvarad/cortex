@@ -17,6 +17,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 /**
@@ -42,7 +43,8 @@ class SweepScheduleTest {
     @Bean
     Sweep sweep(PipelineEventRepository pipelineEventRepository) {
       return new Sweep(pipelineEventRepository, mock(PipelineEventsService.class),
-          Duration.ofHours(2), Duration.ofSeconds(2));
+          mock(FileMetadataRepository.class), mock(GcsStorageService.class),
+          Duration.ofHours(2), Duration.ofSeconds(2), Duration.ofHours(2));
     }
   }
 

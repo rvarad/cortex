@@ -3,9 +3,11 @@ package com.cortex.cortex_ingestion.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,6 +24,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.slf4j.LoggerFactory;
 
+import com.cortex.cortex_common.model.FileMetadata;
+import com.cortex.cortex_common.model.FileStatusEnum;
+import com.cortex.cortex_common.repository.FileMetadataRepository;
 import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 import ch.qos.logback.classic.Level;
@@ -50,8 +55,12 @@ class SweepTest {
 
   private final PipelineEventsService pipelineEventsService = mock(PipelineEventsService.class);
 
+  private final FileMetadataRepository fileMetadataRepository = mock(FileMetadataRepository.class);
+
+  private final GcsStorageService gcsStorageService = mock(GcsStorageService.class);
+
   private final Sweep sweep = new Sweep(pipelineEventRepository, pipelineEventsService,
-      Duration.ofHours(2), Duration.ofMinutes(45));
+      fileMetadataRepository, gcsStorageService, Duration.ofHours(2), Duration.ofMinutes(45), Duration.ofHours(2));
 
   @BeforeEach
   void setUp() {
@@ -95,5 +104,54 @@ class SweepTest {
     assertThat(errors).as("ERROR lines").hasSize(1);
     assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", broken.toString());
     assertThat(errors.get(0).getThrowableProxy().getMessage()).isEqualTo("database down");
+  }
+
+  // ---- Abandoned uploads (failed-states, brick 11b) ----
+
+  @Test
+  void anAbandonedUpload_isDeletedRowFirst_thenItsObject() {
+    FileMetadata pending = pendingFile();
+    when(fileMetadataRepository.findByFileStatusAndCreatedAtBefore(eq(FileStatusEnum.PENDING), any()))
+        .thenReturn(List.of(pending));
+    when(fileMetadataRepository.deleteIfPending(pending.getId())).thenReturn(1);
+
+    sweep.run();
+
+    ArgumentCaptor<LocalDateTime> before = ArgumentCaptor.forClass(LocalDateTime.class);
+    verify(fileMetadataRepository).findByFileStatusAndCreatedAtBefore(eq(FileStatusEnum.PENDING), before.capture());
+    assertThat(before.getValue()).as("PENDING cut-off")
+        .isCloseTo(LocalDateTime.now().minusHours(2), within(1, ChronoUnit.MINUTES));
+
+    InOrder order = inOrder(fileMetadataRepository, gcsStorageService);
+    order.verify(fileMetadataRepository).deleteIfPending(pending.getId());
+    order.verify(gcsStorageService).deleteObject(pending.getObjectName(), pending.getId());
+  }
+
+  @Test
+  void anUploadThatLandedMeanwhile_isLeftAlone() {
+    // The webhook marked it UPLOADED between the query and the delete: no row deleted, no object either.
+    FileMetadata pending = pendingFile();
+    when(fileMetadataRepository.findByFileStatusAndCreatedAtBefore(eq(FileStatusEnum.PENDING), any()))
+        .thenReturn(List.of(pending));
+    when(fileMetadataRepository.deleteIfPending(pending.getId())).thenReturn(0);
+
+    sweep.run();
+
+    verify(fileMetadataRepository).deleteIfPending(pending.getId());
+    verify(gcsStorageService, never()).deleteObject(any(), any());
+  }
+
+  private static FileMetadata pendingFile() {
+    UUID fileId = UUID.randomUUID();
+    return FileMetadata.builder()
+        .id(fileId)
+        .fileDisplayName("talk.mp4")
+        .bucketName("cortex-dev-bucket")
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .fileSize(1_000L)
+        .fileStatus(FileStatusEnum.PENDING)
+        .contentType("video/mp4")
+        .userId("user-1")
+        .build();
   }
 }

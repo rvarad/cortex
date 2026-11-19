@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17. Next: brick 12. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18. Next: brick 12. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -25,8 +25,7 @@ still processing.
   removes the model cost; the job's CPU and its executor slot are the cost left.
 - **Freeing a hung call.** The sweep fails a file whose call hangs, but the thread stays
   hung and keeps its slot (media has two). Timeouts on outbound calls are separate work.
-- **Abandoned uploads.** A `PENDING` row whose upload never finished stays. Separate
-  work; the sweep can take a rule for it later.
+- **A better upload toast and an upload progress tracker.** Separate frontend work.
 - **Old chunk objects of completed files.** `chunks/…` stays in GCS for every completed
   file, though only rag reads it, minutes after upload. A GCS lifecycle rule is separate
   work.
@@ -153,6 +152,14 @@ still processing.
   ```
 - **The sweep runs every 5 minutes.** One run is one indexed query; the interval only
   adds delay. The two N values and the interval are config properties.
+- **An upload that never finished is deleted, not failed** (2026-11-18) — when the
+  browser's PUT to the signed URL fails, the `PENDING` row stays for ever. The upload
+  did not complete and the pipeline never began, so there is nothing to keep. The sweep
+  deletes a `PENDING` row older than **2 hours**: the signed URL lives 30 minutes, and
+  GCS checks it when the PUT starts, so 90 minutes more covers an upload still running
+  (2 GB at about 3 Mbit/s). The delete is conditional on `PENDING`, so a webhook that
+  marks the row `UPLOADED` first wins. Then any object that landed without its webhook
+  is deleted too. The dashboard shows no card for a `PENDING` row.
 - **Reads hide `FOR_DELETION` with `@SQLRestriction` on `FileMetadata`** — every JPA
   read, now and later, treats the row as gone; a filter at each read fails when one
   read forgets it. The sweep uses native SQL, which the restriction does not touch.
@@ -357,6 +364,19 @@ startup; an open stream for a `FOR_CLEANUP` file gets `PIPELINE_FAILED` and is c
 and one for a file still processing gets nothing. In the browser, with both N values set
 short, a file whose media container was stopped mid-job shows Failed with the
 no-progress message after N plus the interval, and no log has an ERROR line for it.
+
+#### 11b. An upload that never finished is deleted — ✅
+
+Added 2026-11-18; see Decisions. Each sweep run first deletes `PENDING` rows older than
+`cortex.sweep.abandoned-upload-age` (2 hours): the row first, only while still
+`PENDING`, then the file's objects, if any. The dashboard shows no card for a `PENDING`
+row, but keeps polling while one exists, so a good upload's card appears once its
+webhook has marked it `UPLOADED`.
+
+**DoD:** Tests: a `PENDING` row is deleted and an `UPLOADED` one is not; an abandoned
+upload loses its row, then its object; one the webhook marked meanwhile is left alone.
+In the browser: a `PENDING` row shows no card, and after the age plus the interval it
+is gone.
 
 #### 12. Rule 2: a failed file is cleaned — ⬜
 

@@ -117,6 +117,20 @@ class FileMetadataRepositoryTest {
         FileStatusEnum.TERMINAL_STATUSES);
   }
 
+  @Test
+  void deleteIfPending_deletesAPendingRow_butLeavesAnUploadedOne() {
+    // The sweep's abandoned uploads (brick 11b): a webhook that marked the row UPLOADED first wins.
+    UUID pending = saved(FileStatusEnum.PENDING);
+    UUID uploaded = saved(FileStatusEnum.UPLOADED);
+
+    assertThat(repo.deleteIfPending(pending)).isEqualTo(1);
+    assertThat(repo.deleteIfPending(uploaded)).isEqualTo(0);
+
+    entityManager.clear();
+    assertThat(read(pending)).isNull();
+    assertThat(read(uploaded)).isNotNull();
+  }
+
   private UUID saved(FileStatusEnum status) {
     return entityManager.persistAndFlush(FileMetadata.builder()
         .fileDisplayName("talk.mp4")

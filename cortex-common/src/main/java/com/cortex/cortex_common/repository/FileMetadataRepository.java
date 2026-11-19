@@ -1,5 +1,6 @@
 package com.cortex.cortex_common.repository;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -28,6 +29,16 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
   Optional<FileMetadata> findByIdForUpdate(@Param("fileId") UUID fileId);
 
   List<FileMetadata> findAllByUserId(String userId);
+
+  /** The sweep: uploads whose signed URL was issued before the cut-off and that never landed. */
+  List<FileMetadata> findByFileStatusAndCreatedAtBefore(FileStatusEnum status, LocalDateTime before);
+
+  // Only while still PENDING: a webhook that marked it UPLOADED first wins, and the row stays.
+  @Transactional
+  @Modifying
+  @Query("DELETE FROM FileMetadata f WHERE f.id = :fileId "
+      + "AND f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.PENDING")
+  int deleteIfPending(@Param("fileId") UUID fileId);
 
   Optional<FileMetadata> findByIdAndUserId(UUID fileId, String userId);
 
