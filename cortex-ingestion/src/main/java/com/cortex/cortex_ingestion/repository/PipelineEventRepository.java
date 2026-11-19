@@ -31,4 +31,15 @@ public interface PipelineEventRepository extends JpaRepository<PipelineEvent, UU
       """, nativeQuery = true)
   List<UUID> findSilentFiles(@Param("uploadedBefore") LocalDateTime uploadedBefore,
       @Param("processingBefore") LocalDateTime processingBefore);
+
+  /**
+   * The sweep's rule 2: failed files with no activity since the cut-off, so nothing still writes
+   * their data. Activity as in {@link #findSilentFiles}.
+   */
+  @Query(value = """
+      SELECT f.id FROM file_metadata f
+      LEFT JOIN LATERAL (SELECT max(e.created_at) AS last FROM pipeline_events e WHERE e.file_id = f.id) a ON true
+      WHERE f.file_status = 'FOR_CLEANUP' AND COALESCE(a.last, f.created_at) < :before
+      """, nativeQuery = true)
+  List<UUID> findSilentFailedFiles(@Param("before") LocalDateTime before);
 }

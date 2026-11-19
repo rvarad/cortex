@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18. Next: brick 12. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18, brick 12 2026-11-19. Next: brick 13. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -378,7 +378,7 @@ upload loses its row, then its object; one the webhook marked meanwhile is left 
 In the browser: a `PENDING` row shows no card, and after the age plus the interval it
 is gone.
 
-#### 12. Rule 2: a failed file is cleaned — ⬜
+#### 12. Rule 2: a failed file is cleaned — ✅
 
 For `FOR_CLEANUP` files with no activity for N: delete the original, `chunks/…` and
 `playback/…` objects; then, in one transaction, delete the file's `media_chunk` rows and
@@ -421,6 +421,19 @@ that deleted the rows, and the after-commit GCS delete, go.
 change nothing; after the job ends and N plus the interval, the bucket has no `chunks/…`
 objects for it and no rows remain. Delete a `FOR_CLEANUP` file while rule 2 cleans it:
 it ends deleted, not `FAILED`.
+
+## Follow-ups (low priority, added 2026-11-19)
+
+- **A cleaned file still names its objects.** After rule 2, a `FAILED` row keeps
+  `object_name` (and `playback_object_name`), though the objects are gone. Clearing them
+  needs a migration that drops `object_name`'s `NOT NULL` (V1), the entity's `@NonNull
+  @NotBlank` and `nullable = false` removed, and every reader of `objectName` checked for
+  null (`deleteObject` would fail on one). Harmless meanwhile: a late webhook for that
+  object finds a `FAILED` row, logs INFO and starts nothing.
+- **A killed media job leaves its working directory.** The job's `finally` deletes
+  `/tmp/media-processing-service-chunks/<objectName>` on success and on failure, but not
+  when the process is killed (container stopped, JVM crash). On startup, media can delete
+  everything under that directory: no job runs at that moment, so all of it is left over.
 
 ## Done when
 

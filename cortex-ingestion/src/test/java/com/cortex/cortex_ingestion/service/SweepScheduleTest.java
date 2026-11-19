@@ -43,7 +43,7 @@ class SweepScheduleTest {
     @Bean
     Sweep sweep(PipelineEventRepository pipelineEventRepository) {
       return new Sweep(pipelineEventRepository, mock(PipelineEventsService.class),
-          mock(FileMetadataRepository.class), mock(GcsStorageService.class),
+          mock(FileMetadataRepository.class), mock(GcsStorageService.class), mock(FilesService.class),
           Duration.ofHours(2), Duration.ofSeconds(2), Duration.ofHours(2));
     }
   }

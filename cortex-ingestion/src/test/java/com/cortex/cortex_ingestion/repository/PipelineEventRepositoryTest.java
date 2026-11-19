@@ -70,6 +70,19 @@ class PipelineEventRepositoryTest {
     assertThat(silent).doesNotContain(completed, forCleanup);
   }
 
+  @Test
+  void findSilentFailedFiles_findsAForCleanupFileNothingWrites_only() {
+    // Rule 2 (brick 12): 45 minutes, so a media job still running for a file rag failed is left alone.
+    UUID silent = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 50);
+    UUID active = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 10);
+    UUID cleaned = fileWithLastEvent(FileStatusEnum.FAILED, 180); // so a second run picks nothing
+    UUID processing = fileWithLastEvent(FileStatusEnum.PROCESSING, 180); // rule 1's, not rule 2's
+
+    List<UUID> silentFailed = repo.findSilentFailedFiles(now.minusMinutes(45));
+
+    assertThat(silentFailed).contains(silent).doesNotContain(active, cleaned, processing);
+  }
+
   /** A file created long ago, whose newest event is minutesAgo old, after an older one. */
   private UUID fileWithLastEvent(FileStatusEnum status, int minutesAgo) {
     UUID fileId = fileCreated(status, minutesAgo + 30);

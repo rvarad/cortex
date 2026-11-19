@@ -84,4 +84,18 @@ public class FilesService {
 
     log.info("[FilesService] Successfully updated display name for fileId: {} to '{}'", fileId, newDisplayName);
   }
+
+  /**
+   * Rule 2's last step, after the sweep deleted the file's objects: FOR_CLEANUP becomes FAILED and
+   * its media_chunk rows go, in one transaction. The row and its events stay (failed-states). False
+   * when the file was no longer FOR_CLEANUP: nothing is changed.
+   */
+  @Transactional
+  public boolean markCleaned(UUID fileId) {
+    if (fileMetadataRepository.markCleaned(fileId) == 0) {
+      return false; // no longer FOR_CLEANUP: deleted meanwhile, or already cleaned
+    }
+    mediaChunkRepository.deleteAllByFileId(fileId);
+    return true;
+  }
 }

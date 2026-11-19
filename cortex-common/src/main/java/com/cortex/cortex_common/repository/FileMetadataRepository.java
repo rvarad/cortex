@@ -68,6 +68,13 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
       + "WHERE f.id = :fileId AND f.fileStatus NOT IN :terminal")
   int markForCleanup(@Param("fileId") UUID fileId, @Param("terminal") Collection<FileStatusEnum> terminal);
 
+  // Rule 2 is done: failed, and its data removed. Only from FOR_CLEANUP: a Delete that came first wins.
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.FAILED "
+      + "WHERE f.id = :fileId AND f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.FOR_CLEANUP")
+  int markCleaned(@Param("fileId") UUID fileId);
+
   // Targeted update of the chunking result only — deliberately does NOT touch
   // playbackObjectName, which the normalization thread owns via its own update.
   // Disjoint columns => the two writers can't clobber each other, in any order.

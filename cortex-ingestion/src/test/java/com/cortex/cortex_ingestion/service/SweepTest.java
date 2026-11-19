@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
@@ -59,8 +60,10 @@ class SweepTest {
 
   private final GcsStorageService gcsStorageService = mock(GcsStorageService.class);
 
-  private final Sweep sweep = new Sweep(pipelineEventRepository, pipelineEventsService,
-      fileMetadataRepository, gcsStorageService, Duration.ofHours(2), Duration.ofMinutes(45), Duration.ofHours(2));
+  private final FilesService filesService = mock(FilesService.class);
+
+  private final Sweep sweep = new Sweep(pipelineEventRepository, pipelineEventsService, fileMetadataRepository,
+      gcsStorageService, filesService, Duration.ofHours(2), Duration.ofMinutes(45), Duration.ofHours(2));
 
   @BeforeEach
   void setUp() {
@@ -141,7 +144,52 @@ class SweepTest {
     verify(gcsStorageService, never()).deleteObject(any(), any());
   }
 
+  // ---- Rule 2 (failed-states, brick 12) ----
+
+  @Test
+  void aSilentFailedFile_losesItsObjectsFirst_thenItsChunks() {
+    FileMetadata failed = givenASilentFailedFile();
+    when(filesService.markCleaned(failed.getId())).thenReturn(true);
+
+    sweep.run();
+
+    verify(pipelineEventRepository).findSilentFailedFiles(any());
+    InOrder order = inOrder(gcsStorageService, filesService);
+    order.verify(gcsStorageService).deleteObject(failed.getObjectName(), failed.getId());
+    order.verify(filesService).markCleaned(failed.getId());
+  }
+
+  @Test
+  void aGcsDeleteThatThrows_leavesTheFileForTheNextRun() {
+    FileMetadata failed = givenASilentFailedFile();
+    doThrow(new IllegalStateException("GCS unreachable"))
+        .doNothing()
+        .when(gcsStorageService).deleteObject(failed.getObjectName(), failed.getId());
+
+    sweep.run();
+
+    verify(filesService, never()).markCleaned(any());
+    List<ILoggingEvent> errors = captured.list.stream().filter(line -> line.getLevel() == Level.ERROR).toList();
+    assertThat(errors).as("ERROR lines").hasSize(1);
+    assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", failed.getId().toString());
+
+    sweep.run(); // still FOR_CLEANUP, so picked again; GCS works now
+
+    verify(filesService).markCleaned(failed.getId());
+  }
+
+  private FileMetadata givenASilentFailedFile() {
+    FileMetadata failed = file(FileStatusEnum.FOR_CLEANUP);
+    when(pipelineEventRepository.findSilentFailedFiles(any())).thenReturn(List.of(failed.getId()));
+    when(fileMetadataRepository.findById(failed.getId())).thenReturn(Optional.of(failed));
+    return failed;
+  }
+
   private static FileMetadata pendingFile() {
+    return file(FileStatusEnum.PENDING);
+  }
+
+  private static FileMetadata file(FileStatusEnum status) {
     UUID fileId = UUID.randomUUID();
     return FileMetadata.builder()
         .id(fileId)
@@ -149,7 +197,7 @@ class SweepTest {
         .bucketName("cortex-dev-bucket")
         .objectName("uploads/media/" + fileId + ".mp4")
         .fileSize(1_000L)
-        .fileStatus(FileStatusEnum.PENDING)
+        .fileStatus(status)
         .contentType("video/mp4")
         .userId("user-1")
         .build();

@@ -118,6 +118,19 @@ class FileMetadataRepositoryTest {
   }
 
   @Test
+  void markCleaned_changesAForCleanupFile_butLeavesAProcessingOne() {
+    UUID forCleanup = saved(FileStatusEnum.FOR_CLEANUP);
+    UUID processing = saved(FileStatusEnum.PROCESSING);
+
+    assertThat(repo.markCleaned(forCleanup)).isEqualTo(1);
+    assertThat(repo.markCleaned(processing)).isEqualTo(0);
+
+    entityManager.clear();
+    assertThat(read(forCleanup).getFileStatus()).isEqualTo(FileStatusEnum.FAILED);
+    assertThat(read(processing).getFileStatus()).isEqualTo(FileStatusEnum.PROCESSING);
+  }
+
+  @Test
   void deleteIfPending_deletesAPendingRow_butLeavesAnUploadedOne() {
     // The sweep's abandoned uploads (brick 11b): a webhook that marked the row UPLOADED first wins.
     UUID pending = saved(FileStatusEnum.PENDING);

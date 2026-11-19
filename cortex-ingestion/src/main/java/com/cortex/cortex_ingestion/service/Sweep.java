@@ -17,8 +17,9 @@ import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * The sweep (failed-states): ingestion's scheduled job. It deletes uploads that never landed, and
- * rule 1 fails a file that has stopped making progress, judged by its silence, not its age.
+ * The sweep (failed-states): ingestion's scheduled job. It deletes uploads that never landed; rule 1
+ * fails a file that has stopped making progress, judged by its silence, not its age; rule 2 removes
+ * a failed file's data once nothing writes it any more.
  */
 @Slf4j
 @Component
@@ -28,6 +29,7 @@ public class Sweep {
   private final PipelineEventsService pipelineEventsService;
   private final FileMetadataRepository fileMetadataRepository;
   private final GcsStorageService gcsStorageService;
+  private final FilesService filesService;
 
   /** UPLOADED files: covers the media queue wait (failed-states, Decisions, "N is a guess"). */
   private final Duration uploadedSilence;
@@ -39,7 +41,7 @@ public class Sweep {
   private final Duration abandonedUploadAge;
 
   public Sweep(PipelineEventRepository pipelineEventRepository, PipelineEventsService pipelineEventsService,
-      FileMetadataRepository fileMetadataRepository, GcsStorageService gcsStorageService,
+      FileMetadataRepository fileMetadataRepository, GcsStorageService gcsStorageService, FilesService filesService,
       @Value("${cortex.sweep.uploaded-silence}") Duration uploadedSilence,
       @Value("${cortex.sweep.processing-silence}") Duration processingSilence,
       @Value("${cortex.sweep.abandoned-upload-age}") Duration abandonedUploadAge) {
@@ -47,6 +49,7 @@ public class Sweep {
     this.pipelineEventsService = pipelineEventsService;
     this.fileMetadataRepository = fileMetadataRepository;
     this.gcsStorageService = gcsStorageService;
+    this.filesService = filesService;
     this.uploadedSilence = uploadedSilence;
     this.processingSilence = processingSilence;
     this.abandonedUploadAge = abandonedUploadAge;
@@ -69,7 +72,33 @@ public class Sweep {
         MDC.remove("fileId");
       }
     }
+    // Rule 2: the same 45 minutes. A file rag failed can still have its media job writing chunks.
+    for (UUID fileId : pipelineEventRepository.findSilentFailedFiles(now.minus(processingSilence))) {
+      MDC.put("fileId", fileId.toString());
+      try {
+        cleanFailedFile(fileId);
+      } catch (RuntimeException e) { // Logged once; the file stays FOR_CLEANUP, so the next run tries again.
+        log.error("Sweep could not clean a failed file", e);
+      } finally {
+        MDC.remove("fileId");
+      }
+    }
     pipelineEventsService.endOpenStreamsOfEndedFiles();
+  }
+
+  /**
+   * GCS first, rows last (failed-states, Decisions): a crash between them leaves the file FOR_CLEANUP,
+   * and the next run does it again; deleting an object that is gone does nothing.
+   */
+  private void cleanFailedFile(UUID fileId) {
+    FileMetadata file = fileMetadataRepository.findById(fileId).orElse(null);
+    if (file == null || file.getFileStatus() != FileStatusEnum.FOR_CLEANUP) {
+      return; // deleted, or moved on, since the query
+    }
+    gcsStorageService.deleteObject(file.getObjectName(), fileId); // the original, chunks/ and playback/
+    if (filesService.markCleaned(fileId)) { // through the proxy: its own transaction
+      log.info("Failed file cleaned");
+    }
   }
 
   /**
