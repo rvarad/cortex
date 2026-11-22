@@ -34,7 +34,7 @@ class MediaChunkRepositoryTest {
       DockerImageName.parse("pgvector/pgvector:pg15").asCompatibleSubstituteFor("postgres"));
 
   /** The failed list, as the search queries take it: names (native SQL). */
-  private static final List<String> FAILED = FileStatusEnum.FAILED_STATUSES.stream().map(Enum::name).toList();
+  private static final List<String> HIDDEN = FileStatusEnum.HIDDEN_FROM_SEARCH.stream().map(Enum::name).toList();
 
   @Autowired
   MediaChunkRepository repo;
@@ -59,13 +59,13 @@ class MediaChunkRepositoryTest {
 
     UUID saved = repo.saveAndFlush(chunk).getId();
 
-    List<UUID> result = repo.lexicalSearch("test-user", "docker", "en", null, 10, FAILED);
+    List<UUID> result = repo.lexicalSearch("test-user", "docker", "en", null, 10, HIDDEN);
 
     assertThat(result).contains(saved);
   }
 
   @ParameterizedTest
-  @EnumSource(value = FileStatusEnum.class, names = { "FOR_CLEANUP", "FAILED" })
+  @EnumSource(value = FileStatusEnum.class, names = { "FOR_CLEANUP", "FAILED", "FOR_DELETION" })
   void aChunkOfAFailedFile_isFoundByNeitherSearch(FileStatusEnum failed) {
     // ---- Arrange: a finished file, and one chunk of it that both searches find ----
     FileMetadata file = entityManager.persistAndFlush(FileMetadata.builder()
@@ -104,10 +104,10 @@ class MediaChunkRepositoryTest {
   }
 
   private List<UUID> semantic(float[] vector) {
-    return repo.semanticSearch("user-1", vector, null, 10, FAILED);
+    return repo.semanticSearch("user-1", vector, null, 10, HIDDEN);
   }
 
   private List<UUID> lexical() {
-    return repo.lexicalSearch("user-1", "docker", "en", null, 10, FAILED);
+    return repo.lexicalSearch("user-1", "docker", "en", null, 10, HIDDEN);
   }
 }

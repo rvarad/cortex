@@ -83,6 +83,22 @@ class PipelineEventRepositoryTest {
     assertThat(silentFailed).contains(silent).doesNotContain(active, cleaned, processing);
   }
 
+  @Test
+  void findSilentFilesForDeletion_findsADeletedFileNothingWrites_withItsObjectName() {
+    // Rule 3 (brick 13): native SQL, so it sees the FOR_DELETION rows that JPA cannot.
+    UUID silent = fileWithLastEvent(FileStatusEnum.FOR_DELETION, 50);
+    UUID active = fileWithLastEvent(FileStatusEnum.FOR_DELETION, 10);
+    UUID failed = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 180); // rule 2's, not rule 3's
+
+    List<PipelineEventRepository.SilentFile> deleted = repo.findSilentFilesForDeletion(now.minusMinutes(45));
+
+    assertThat(deleted).extracting(PipelineEventRepository.SilentFile::getId)
+        .contains(silent).doesNotContain(active, failed);
+    assertThat(deleted).filteredOn(file -> file.getId().equals(silent))
+        .singleElement().extracting(PipelineEventRepository.SilentFile::getObjectName).asString()
+        .startsWith("uploads/media/");
+  }
+
   /** A file created long ago, whose newest event is minutesAgo old, after an older one. */
   private UUID fileWithLastEvent(FileStatusEnum status, int minutesAgo) {
     UUID fileId = fileCreated(status, minutesAgo + 30);

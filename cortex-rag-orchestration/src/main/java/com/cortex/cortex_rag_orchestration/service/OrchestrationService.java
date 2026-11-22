@@ -17,6 +17,7 @@ import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
 import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.kafka.KafkaSends;
+import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.PipelineEventEnum;
 import com.cortex.cortex_common.repository.FileMetadataRepository;
@@ -53,8 +54,12 @@ public class OrchestrationService {
     MDC.put("fileId", event.getFileId().toString());
     try {
       FileStatusEnum status = fileMetadataRepository.findById(event.getFileId())
-          .orElseThrow(() -> new IllegalStateException("File not found: " + event.getFileId()))
-          .getFileStatus();
+          .map(FileMetadata::getFileStatus).orElse(null);
+      // No row: deleted while this chunk waited (FOR_DELETION is hidden from JPA). Normal, so INFO, not an error.
+      if (status == null) {
+        log.info("File is gone or being deleted: chunk {} not processed", event.getChunkId());
+        return;
+      }
       // Failed or completed while this chunk waited in Kafka: no model call is spent on it.
       if (status.isTerminal()) {
         log.info("File is already {}: chunk {} not processed", status, event.getChunkId());

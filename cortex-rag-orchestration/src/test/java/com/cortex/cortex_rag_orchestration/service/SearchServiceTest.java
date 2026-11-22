@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.embedding.EmbeddingModel;
 
@@ -50,6 +51,23 @@ class SearchServiceTest {
       embeddingModel, mediaChunkRepository, fileMetadataRepository, TOKEN_BUDGET);
 
   private final UUID fileId = UUID.randomUUID();
+
+  @BeforeEach
+  void theFileIsVisible() {
+    // getFileContext reads the file first: a deleted one is hidden, and has nothing to give (brick 13).
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(fileMetadata("demo.mp4")));
+  }
+
+  @Test
+  void aHiddenFile_returnsNothing_andReadsNoChunks() {
+    // FOR_DELETION: @SQLRestriction hides the row, but not its media_chunk rows, which this reads directly.
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.empty());
+
+    assertThat(searchService.getFileContext(request("summarise this video"), "user-1")).isEmpty();
+
+    verify(mediaChunkRepository, never()).findByFileIdAndUserIdAndStatusOrderByChunkIndexAsc(any(), anyString(), any());
+    verifyNoInteractions(embeddingModel);
+  }
 
   @Test
   void underBudget_stuffsEveryChunkInChunkIndexOrder_withoutRetrieving() {
@@ -109,14 +127,14 @@ class SearchServiceTest {
     // Embedding the query is the fingerprint of the retrieval path — an oversized
     // file must not be stuffed into the prompt.
     verify(embeddingModel).embed("what did he say about docker?");
-    verify(mediaChunkRepository).semanticSearch(eq("user-1"), any(), eq(fileId), anyInt(), failedStatuses());
+    verify(mediaChunkRepository).semanticSearch(eq("user-1"), any(), eq(fileId), anyInt(), hiddenStatuses());
     verify(mediaChunkRepository).lexicalSearch(eq("user-1"), anyString(), anyString(), eq(fileId), anyInt(),
-        failedStatuses());
+        hiddenStatuses());
   }
 
-  /** Both searches leave out the failed files: FOR_CLEANUP and FAILED, in any order. */
-  private static Collection<String> failedStatuses() {
-    return argThat(statuses -> Set.copyOf(statuses).equals(Set.of("FOR_CLEANUP", "FAILED")));
+  /** Both searches leave out failed and deleted files, in any order (FileStatusEnum.HIDDEN_FROM_SEARCH). */
+  private static Collection<String> hiddenStatuses() {
+    return argThat(statuses -> Set.copyOf(statuses).equals(Set.of("FOR_CLEANUP", "FAILED", "FOR_DELETION")));
   }
 
   @Test
@@ -146,7 +164,7 @@ class SearchServiceTest {
 
     assertThat(searchService.getFileContext(request("summarise this video"), "user-1")).isEmpty();
 
-    verifyNoInteractions(embeddingModel, fileMetadataRepository);
+    verifyNoInteractions(embeddingModel);
   }
 
   @Test

@@ -147,8 +147,12 @@ public class MediaProcessingService {
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
-      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId)
-          .orElseThrow(() -> new IllegalStateException("File metadata not found for objectName: " + objectName));
+      // No row: deleted while this job waited (FOR_DELETION is hidden from JPA). Normal, so INFO, not an error.
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
+      if (fileMetadata == null) {
+        log.info("File is gone or being deleted: job not run");
+        return;
+      }
 
       // Failed or rejected while this job waited in the queue: there is nothing left to do.
       if (fileMetadata.getFileStatus().isTerminal()) {

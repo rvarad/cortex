@@ -42,6 +42,12 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
 
   Optional<FileMetadata> findByIdAndUserId(UUID fileId, String userId);
 
+  // Rule 3's last step. Native: JPA cannot see a FOR_DELETION row (@SQLRestriction on FileMetadata).
+  @Transactional
+  @Modifying
+  @Query(value = "DELETE FROM file_metadata WHERE id = :fileId AND file_status = 'FOR_DELETION'", nativeQuery = true)
+  int deleteIfForDeletion(@Param("fileId") UUID fileId);
+
   // The status writes below change a row only when its status is not in `terminal`
   // (FileStatusEnum.TERMINAL_STATUSES): the pipeline never moves a terminal file. Each
   // returns the rows it changed; 0 means the file is terminal or gone, and the caller stops.

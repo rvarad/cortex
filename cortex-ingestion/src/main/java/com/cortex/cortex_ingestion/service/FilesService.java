@@ -98,4 +98,18 @@ public class FilesService {
     mediaChunkRepository.deleteAllByFileId(fileId);
     return true;
   }
+
+  /**
+   * Rule 3's last step, after the sweep deleted the file's objects: every row of a deleted file, in
+   * one transaction. False when it was not FOR_DELETION (already removed): nothing is changed.
+   */
+  @Transactional
+  public boolean deleteRowsOfDeletedFile(UUID fileId) {
+    if (fileMetadataRepository.deleteIfForDeletion(fileId) == 0) {
+      return false; // already removed by an earlier run
+    }
+    mediaChunkRepository.deleteAllByFileId(fileId);
+    pipelineEventRepository.deleteAllByFileId(fileId);
+    return true;
+  }
 }

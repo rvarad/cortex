@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockingDetails;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -117,6 +118,17 @@ class OrchestrationServiceFailedFileTest {
     orchestrationService.processMediaChunk(chunk);
 
     verifyNoInteractions(visionService, transcriptionService, embeddingService, kafkaTemplate);
+  }
+
+  @Test
+  void aChunkOfAMissingFile_callsNoModel() {
+    // Deleted (FOR_DELETION is hidden from JPA, so findById is empty): skipped like a terminal file (brick 13).
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.empty());
+
+    orchestrationService.processMediaChunk(videoChunk());
+
+    verifyNoInteractions(visionService, transcriptionService, embeddingService, kafkaTemplate);
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
   }
 
   private void givenTheFileIs(FileStatusEnum status) {

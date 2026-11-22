@@ -210,6 +210,31 @@ class MediaJobBoundaryTest {
   }
 
   @Test
+  void aJobForAMissingFile_neverProbes() throws Exception {
+    // ---- Arrange: deleted while its job waited (FOR_DELETION is hidden, so findById is empty) ----
+    UUID fileId = UUID.randomUUID();
+    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn("http://127.0.0.1:9/media.mp4");
+    when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.empty());
+
+    // ---- Act ----
+    consumer.consume(FileIngestionEventDTO.builder()
+        .fileId(fileId)
+        .objectName("uploads/media/" + fileId + ".mp4")
+        .userId("user-1")
+        .build());
+
+    ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
+    pool.shutdown();
+    assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).as("the job finished").isTrue();
+
+    // ---- Assert: the user deleted it; nothing failed, so nothing above INFO ----
+    verifyNoInteractions(kafkaTemplate);
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+    assertThat(captured.list).as("lines above INFO")
+        .noneMatch(logged -> logged.getLevel().isGreaterOrEqual(Level.WARN));
+  }
+
+  @Test
   void aJobThatCannotBeQueued_failsTheListener_soTheKafkaHandlerReportsIt() throws Exception {
     // ---- Arrange: both job threads busy, the queue full, and the listener thread interrupted ----
     // (as on shutdown). The reject handler then cannot wait for a free place in the queue.

@@ -43,9 +43,9 @@ public class SearchService {
 
   private static final double RRF_K = 60;
 
-  /** Search leaves these files' chunks out. Names, not enums: the search queries are native SQL. */
-  private static final List<String> FAILED_STATUSES =
-      FileStatusEnum.FAILED_STATUSES.stream().map(Enum::name).toList();
+  /** Failed and deleted files: search leaves their chunks out. Names, not enums: the queries are native SQL. */
+  private static final List<String> HIDDEN_STATUSES =
+      FileStatusEnum.HIDDEN_FROM_SEARCH.stream().map(Enum::name).toList();
 
   private final int tokenBudget;
 
@@ -66,12 +66,12 @@ public class SearchService {
 
     CompletableFuture<List<UUID>> semanticSearchFuture = CompletableFuture.supplyAsync(
         () -> mediaChunkRepository.semanticSearch(userId, queryVector, request.getFileId(), CANDIDATE_LIMIT,
-            FAILED_STATUSES),
+            HIDDEN_STATUSES),
         executorService);
 
     CompletableFuture<List<UUID>> lexicalSearchFuture = CompletableFuture.supplyAsync(() -> mediaChunkRepository
         .lexicalSearch(userId, request.getQuery(), languageCode, request.getFileId(), CANDIDATE_LIMIT,
-            FAILED_STATUSES),
+            HIDDEN_STATUSES),
         executorService);
 
     CompletableFuture.allOf(semanticSearchFuture, lexicalSearchFuture).join();
@@ -122,6 +122,12 @@ public class SearchService {
       return search(request, userId);
     }
 
+    // The file first: a deleted one is hidden from JPA, but its media_chunk rows, read below, are not.
+    FileMetadata file = fileMetadataRepository.findById(request.getFileId()).orElse(null);
+    if (file == null) {
+      return List.of();
+    }
+
     List<MediaChunk> chunks = mediaChunkRepository
         .findByFileIdAndUserIdAndStatusOrderByChunkIndexAsc(request.getFileId(), userId, MediaChunk.Status.COMPLETED);
 
@@ -141,8 +147,7 @@ public class SearchService {
       return search(request, userId);
     }
 
-    String displayName = fileMetadataRepository.findById(request.getFileId()).map(FileMetadata::getFileDisplayName)
-        .orElse("Unknown File");
+    String displayName = file.getFileDisplayName();
 
     return chunks.stream().map(chunk -> SearchResultDTO.builder()
         .id(chunk.getId())

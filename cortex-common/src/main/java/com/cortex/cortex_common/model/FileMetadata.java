@@ -3,6 +3,7 @@ package com.cortex.cortex_common.model;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import org.hibernate.annotations.SQLRestriction;
 import org.springframework.lang.NonNull;
 
 import jakarta.persistence.Column;
@@ -27,6 +28,9 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @Entity
 @Table(name = "file_metadata")
+// A deleted file is gone to every JPA read, now and later: one filter here, not one at each read
+// that a new read could forget (failed-states, Decisions). Native SQL (the sweep, search) still sees it.
+@SQLRestriction("file_status <> 'FOR_DELETION'")
 public class FileMetadata {
 
   @Id
@@ -55,7 +59,7 @@ public class FileMetadata {
 
   @NonNull
   @NotNull(message = "File status cannot be empty")
-  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED', 'REJECTED', 'FOR_CLEANUP', 'FAILED'))")
+  @Column(nullable = false, columnDefinition = "varchar(255) CHECK (file_status IN ('PENDING', 'UPLOADED', 'PROCESSING', 'CHUNKED', 'COMPLETED', 'REJECTED', 'FOR_CLEANUP', 'FAILED', 'FOR_DELETION'))")
   @Enumerated(EnumType.STRING)
   private FileStatusEnum fileStatus;
 

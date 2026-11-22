@@ -185,6 +185,56 @@ class SweepTest {
     return failed;
   }
 
+  // ---- Rule 3 (failed-states, brick 13) ----
+
+  @Test
+  void aSilentDeletedFile_losesItsObjectsFirst_thenItsRows() {
+    PipelineEventRepository.SilentFile deleted = silentDeletedFile();
+    when(pipelineEventRepository.findSilentFilesForDeletion(any())).thenReturn(List.of(deleted));
+    when(filesService.deleteRowsOfDeletedFile(deleted.getId())).thenReturn(true);
+
+    sweep.run();
+
+    InOrder order = inOrder(gcsStorageService, filesService);
+    order.verify(gcsStorageService).deleteObject(deleted.getObjectName(), deleted.getId());
+    order.verify(filesService).deleteRowsOfDeletedFile(deleted.getId());
+  }
+
+  @Test
+  void aGcsDeleteThatThrows_keepsTheRows_andTheNextRunRemovesEverything() {
+    PipelineEventRepository.SilentFile deleted = silentDeletedFile();
+    when(pipelineEventRepository.findSilentFilesForDeletion(any())).thenReturn(List.of(deleted));
+    doThrow(new IllegalStateException("GCS unreachable"))
+        .doNothing()
+        .when(gcsStorageService).deleteObject(deleted.getObjectName(), deleted.getId());
+
+    sweep.run();
+
+    verify(filesService, never()).deleteRowsOfDeletedFile(any());
+    List<ILoggingEvent> errors = captured.list.stream().filter(line -> line.getLevel() == Level.ERROR).toList();
+    assertThat(errors).as("ERROR lines").hasSize(1);
+    assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", deleted.getId().toString());
+
+    sweep.run(); // still FOR_DELETION, so picked again; GCS works now
+
+    verify(filesService).deleteRowsOfDeletedFile(deleted.getId());
+  }
+
+  private static PipelineEventRepository.SilentFile silentDeletedFile() {
+    UUID fileId = UUID.randomUUID();
+    return new PipelineEventRepository.SilentFile() {
+      @Override
+      public UUID getId() {
+        return fileId;
+      }
+
+      @Override
+      public String getObjectName() {
+        return "uploads/media/" + fileId + ".mp4";
+      }
+    };
+  }
+
   private static FileMetadata pendingFile() {
     return file(FileStatusEnum.PENDING);
   }

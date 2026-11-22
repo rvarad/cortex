@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
-import { subscribeToPipelineEvents } from "@/lib/api";
+import { getFiles, subscribeToPipelineEvents } from "@/lib/api";
 import type { MediaManifest, PipelineStreamEvent } from "@/lib/types";
 import { formatDuration } from "@/lib/helpers";
 import { Card } from "@/components/ui/card";
@@ -367,14 +367,17 @@ export default function GlassboxTimelinePage() {
   const [events, setEvents] = useState<PipelineStreamEvent[]>([]);
   const [totalChunks, setTotalChunks] = useState<number | null>(null);
   const [streamErrored, setStreamErrored] = useState(false);
+  const [fileGone, setFileGone] = useState(false);
   const [chunks, setChunks] = useState<Record<number, ChunkState>>({});
 
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
+    let received = false;
     const es = subscribeToPipelineEvents(
       fileId,
       (event) => {
+        received = true;
         setEvents((prev) => [...prev, event]);
 
         // Terminal events: the server completes its emitter, but close from
@@ -450,6 +453,15 @@ export default function GlassboxTimelinePage() {
       },
       () => {
         setStreamErrored(true);
+        // EventSource hides the status, so a 404 (deleted, or not yours) looks like a lost
+        // connection. Only the open can 404, so check only when no event came; the list decides.
+        if (!received) {
+          getFiles()
+            .then((files) => {
+              if (!files.some((f) => f.fileId === fileId)) setFileGone(true);
+            })
+            .catch(() => {}); // unreachable too: the lost-connection line stays
+        }
       }
     );
 
@@ -573,6 +585,24 @@ export default function GlassboxTimelinePage() {
   }
 
   const badge = OUTCOME_BADGES[outcome];
+
+  if (fileGone) {
+    return (
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-4 px-4 py-8 text-center">
+        <XCircle className="h-10 w-10 text-muted-foreground" />
+        <h1 className="text-xl font-semibold">This file no longer exists</h1>
+        <p className="text-sm text-muted-foreground">
+          It was deleted, or the link is wrong.
+        </p>
+        <Link href="/dashboard">
+          <Button variant="outline" className="gap-2">
+            <ArrowLeft className="h-4 w-4" />
+            Back to Library
+          </Button>
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-8">

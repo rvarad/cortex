@@ -20,7 +20,7 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
       AND embedding IS NOT NULL
       AND user_id = :userId
       AND (:fileId IS NULL OR file_id = :fileId)
-      AND NOT EXISTS (SELECT 1 FROM file_metadata f WHERE f.id = media_chunk.file_id AND f.file_status IN (:failed))
+      AND NOT EXISTS (SELECT 1 FROM file_metadata f WHERE f.id = media_chunk.file_id AND f.file_status IN (:hidden))
       ORDER BY embedding <=> cast(:queryVector as vector)
       LIMIT :maxResults
       """, nativeQuery = true)
@@ -29,14 +29,14 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
       @Param("queryVector") float[] queryVector,
       @Param("fileId") UUID fileId,
       @Param("maxResults") int maxResults,
-      @Param("failed") Collection<String> failed); // names: native SQL would bind an enum as its ordinal
+      @Param("hidden") Collection<String> hidden); // names: native SQL would bind an enum as its ordinal
 
   @Query(value = """
       SELECT id FROM media_chunk
       WHERE status = 'COMPLETED'
       AND user_id = :userId
       AND (:fileId IS NULL OR file_id = :fileId)
-      AND NOT EXISTS (SELECT 1 FROM file_metadata f WHERE f.id = media_chunk.file_id AND f.file_status IN (:failed))
+      AND NOT EXISTS (SELECT 1 FROM file_metadata f WHERE f.id = media_chunk.file_id AND f.file_status IN (:hidden))
       AND search_vector @@ websearch_to_tsquery(get_pg_dictionary(:langCode), :queryText)
       ORDER BY ts_rank(
           search_vector,
@@ -50,7 +50,7 @@ public interface MediaChunkRepository extends JpaRepository<MediaChunk, UUID> {
       @Param("langCode") String langCode,
       @Param("fileId") UUID fileId,
       @Param("maxResults") int maxResults,
-      @Param("failed") Collection<String> failed); // names: native SQL would bind an enum as its ordinal
+      @Param("hidden") Collection<String> hidden); // names: native SQL would bind an enum as its ordinal
 
   void deleteAllByFileId(UUID fileId);
 

@@ -216,7 +216,8 @@ public class PipelineEventsService {
     FileMetadata file = fileMetadataRepository.findByIdForUpdate(fileId).orElse(null);
 
     if (file == null) {
-      log.warn("[PipelineEventsService] File Metadata not found for fileId: {}", fileId);
+      // INFO: deleted while its job still runs (FOR_DELETION is hidden from JPA); its events keep coming.
+      log.info("[PipelineEventsService] File is gone or being deleted: no completion check for fileId: {}", fileId);
       return false;
     }
 

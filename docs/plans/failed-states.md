@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18, brick 12 2026-11-19. Next: brick 13. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18, bricks 12-13 2026-11-19. Next: brick 14. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -395,7 +395,7 @@ bucket has no objects for the file, and its card and timeline are still there.
 and rows, trying again until it succeeds, and a delete during processing leaves nothing
 behind.
 
-#### 13. Rule 3, and deleted files are hidden — ⬜
+#### 13. Rule 3, and deleted files are hidden — ✅
 
 A migration adds `FOR_DELETION` to the CHECK constraint. The enum gets it, and it joins
 the terminal list and the statuses that search leaves out. `@SQLRestriction` on
@@ -411,6 +411,15 @@ plus the interval its objects and rows are gone. Tests: a GCS delete that throws
 the rows, and the next run deletes everything; a media job and a rag chunk for a
 `FOR_DELETION` file log INFO, no ERROR, and do no work; the native search queries still
 return the chunks of other files.
+
+**Found while building it (2026-11-19):** attachments and `read_file` read a file's chunks
+by `fileId` straight from `media_chunk` (`SearchService.getFileContext`), which
+`@SQLRestriction` on `FileMetadata` does not reach. So that read checks the file first,
+and returns nothing for a hidden one. Hibernate 6.6 applies the restriction to
+`findById` and to the JPQL `rename` update too (checked by a test), so neither needed its
+own filter. The file page of a deleted file showed "connection lost": EventSource cannot
+read the 404. When the stream fails before any event, the page checks the file list and,
+if the file is not in it, shows "This file no longer exists".
 
 #### 14. Delete marks the file — ⬜
 

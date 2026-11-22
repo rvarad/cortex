@@ -19,7 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * The sweep (failed-states): ingestion's scheduled job. It deletes uploads that never landed; rule 1
  * fails a file that has stopped making progress, judged by its silence, not its age; rule 2 removes
- * a failed file's data once nothing writes it any more.
+ * a failed file's data once nothing writes it any more; rule 3 removes a deleted file, data and rows.
  */
 @Slf4j
 @Component
@@ -79,6 +79,22 @@ public class Sweep {
         cleanFailedFile(fileId);
       } catch (RuntimeException e) { // Logged once; the file stays FOR_CLEANUP, so the next run tries again.
         log.error("Sweep could not clean a failed file", e);
+      } finally {
+        MDC.remove("fileId");
+      }
+    }
+    // Rule 3: the same 45 minutes. A job still running for a deleted file keeps writing until it ends.
+    for (PipelineEventRepository.SilentFile file : pipelineEventRepository
+        .findSilentFilesForDeletion(now.minus(processingSilence))) {
+      MDC.put("fileId", file.getId().toString());
+      try {
+        // GCS first, rows last, as in rule 2: a crash between them leaves the rows, and the next run does it again.
+        gcsStorageService.deleteObject(file.getObjectName(), file.getId());
+        if (filesService.deleteRowsOfDeletedFile(file.getId())) { // through the proxy: its own transaction
+          log.info("Deleted file removed");
+        }
+      } catch (RuntimeException e) { // Logged once; the rows stay, so the next run tries again.
+        log.error("Sweep could not remove a deleted file", e);
       } finally {
         MDC.remove("fileId");
       }

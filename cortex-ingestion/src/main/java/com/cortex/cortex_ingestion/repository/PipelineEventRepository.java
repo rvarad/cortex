@@ -42,4 +42,22 @@ public interface PipelineEventRepository extends JpaRepository<PipelineEvent, UU
       WHERE f.file_status = 'FOR_CLEANUP' AND COALESCE(a.last, f.created_at) < :before
       """, nativeQuery = true)
   List<UUID> findSilentFailedFiles(@Param("before") LocalDateTime before);
+
+  /** A deleted file the sweep's rule 3 can remove: its id, and the name of its original object. */
+  interface SilentFile {
+    UUID getId();
+
+    String getObjectName();
+  }
+
+  /**
+   * The sweep's rule 3: deleted files with no activity since the cut-off, so a job still running for
+   * them has stopped writing. Returns the object name too: JPA can no longer read these rows.
+   */
+  @Query(value = """
+      SELECT f.id AS id, f.object_name AS objectName FROM file_metadata f
+      LEFT JOIN LATERAL (SELECT max(e.created_at) AS last FROM pipeline_events e WHERE e.file_id = f.id) a ON true
+      WHERE f.file_status = 'FOR_DELETION' AND COALESCE(a.last, f.created_at) < :before
+      """, nativeQuery = true)
+  List<SilentFile> findSilentFilesForDeletion(@Param("before") LocalDateTime before);
 }

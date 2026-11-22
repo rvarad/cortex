@@ -118,6 +118,31 @@ class FileMetadataRepositoryTest {
   }
 
   @Test
+  void aForDeletionRow_isHiddenFromEveryRead() {
+    // @SQLRestriction (brick 13): every JPA read treats a deleted file as gone; only native SQL sees it.
+    String objectName = "uploads/media/" + UUID.randomUUID() + ".mp4";
+    UUID deleted = entityManager.persistAndFlush(FileMetadata.builder()
+        .fileDisplayName("talk.mp4")
+        .bucketName("cortex-dev-bucket")
+        .objectName(objectName)
+        .fileSize(1_000L)
+        .fileStatus(FileStatusEnum.FOR_DELETION)
+        .contentType("video/mp4")
+        .userId("user-1")
+        .build()).getId();
+    UUID visible = saved(FileStatusEnum.COMPLETED);
+    entityManager.clear();
+
+    assertThat(repo.findById(deleted)).as("findById").isEmpty();
+    assertThat(repo.findByIdAndUserId(deleted, "user-1")).as("findByIdAndUserId").isEmpty();
+    assertThat(repo.findByIdForUpdate(deleted)).as("findByIdForUpdate").isEmpty();
+    assertThat(repo.findByObjectName(objectName)).as("findByObjectName").isEmpty();
+    assertThat(repo.findAllByUserId("user-1")).extracting(FileMetadata::getId).as("findAllByUserId")
+        .contains(visible).doesNotContain(deleted);
+    assertThat(repo.rename(deleted, "user-1", "renamed.mp4")).as("rename").isZero();
+  }
+
+  @Test
   void markCleaned_changesAForCleanupFile_butLeavesAProcessingOne() {
     UUID forCleanup = saved(FileStatusEnum.FOR_CLEANUP);
     UUID processing = saved(FileStatusEnum.PROCESSING);
