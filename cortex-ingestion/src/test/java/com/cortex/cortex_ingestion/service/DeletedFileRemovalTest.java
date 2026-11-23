@@ -1,7 +1,6 @@
 package com.cortex.cortex_ingestion.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 import java.util.UUID;
 
@@ -55,7 +54,7 @@ class DeletedFileRemovalTest {
   @Test
   void aDeletedFile_losesEveryRow_andAnotherFileKeepsItsOwn() {
     FilesService filesService = new FilesService(pipelineEventRepository, mediaChunkRepository,
-        fileMetadataRepository, mock(GcsStorageService.class));
+        fileMetadataRepository);
     UUID deleted = fileWithChunksAndEvents(FileStatusEnum.FOR_DELETION, 2);
     UUID other = fileWithChunksAndEvents(FileStatusEnum.COMPLETED, 1);
     entityManager.clear();

@@ -94,6 +94,14 @@ public interface FileMetadataRepository extends JpaRepository<FileMetadata, UUID
       @Param("hasVideo") Boolean hasVideo, @Param("hasAudio") Boolean hasAudio,
       @Param("videoCodec") String videoCodec, @Param("terminal") Collection<FileStatusEnum> terminal);
 
+  // Delete: from any status, so no status condition. A row already FOR_DELETION is hidden
+  // (@SQLRestriction), so a second Delete changes nothing and answers 404. Rule 3 removes it.
+  @Transactional
+  @Modifying
+  @Query("UPDATE FileMetadata f SET f.fileStatus = com.cortex.cortex_common.model.FileStatusEnum.FOR_DELETION "
+      + "WHERE f.id = :fileId AND f.userId = :userId")
+  int markForDeletion(@Param("fileId") UUID fileId, @Param("userId") String userId);
+
   // Only the name: a save of the whole row would write back the status it read.
   @Transactional
   @Modifying

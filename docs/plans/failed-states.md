@@ -1,6 +1,6 @@
 # Failed states
 
-**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18, bricks 12-13 2026-11-19. Next: brick 14. The definition is in
+**Status:** Planned 2026-11-03. Bricks 1-4 done 2026-11-05, bricks 5-6 2026-11-12, bricks 7-8 2026-11-13, brick 9 2026-11-16. Brick 10 dropped and brick 11 done 2026-11-17, brick 11b 2026-11-18, bricks 12-13 2026-11-19, brick 14 2026-11-22: all slices built. Next: the Done-when run. The definition is in
 `CONTEXT.md` (**failed**), the send kinds in ADR-0014's 2026-10-30 amendment, and the
 rest under Decisions.
 **Branch:** failed-states
@@ -421,7 +421,7 @@ own filter. The file page of a deleted file showed "connection lost": EventSourc
 read the 404. When the stream fails before any event, the page checks the file list and,
 if the file is not in it, shows "This file no longer exists".
 
-#### 14. Delete marks the file — ⬜
+#### 14. Delete marks the file — ✅
 
 The Delete endpoint sets `FOR_DELETION` from any status and answers. The transaction
 that deleted the rows, and the after-commit GCS delete, go.
@@ -430,6 +430,13 @@ that deleted the rows, and the after-commit GCS delete, go.
 change nothing; after the job ends and N plus the interval, the bucket has no `chunks/…`
 objects for it and no rows remain. Delete a `FOR_CLEANUP` file while rule 2 cleans it:
 it ends deleted, not `FAILED`.
+
+**Found while building it (2026-11-22):** no running job can undo the mark, so no new
+guard was needed. Every pipeline status write is a JPQL update with a status condition,
+which `FOR_DELETION` (terminal, and hidden) fails. The only `save` of a file row, in the
+completion check, runs under a row lock: if Delete comes first, the locked read does not
+find the row; if the check comes first, Delete waits for it and then marks the
+`COMPLETED` row. A test runs every write against a `FOR_DELETION` row.
 
 ## Follow-ups (low priority, added 2026-11-19)
 

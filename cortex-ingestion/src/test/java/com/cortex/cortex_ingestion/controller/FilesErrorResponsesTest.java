@@ -76,8 +76,7 @@ class FilesErrorResponsesTest {
       mock(Storage.class), fileMetadataRepository, mock(KafkaProducerService.class));
 
   private final FilesService filesService = new FilesService(
-      mock(PipelineEventRepository.class), mock(MediaChunkRepository.class), fileMetadataRepository,
-      gcsStorageService);
+      mock(PipelineEventRepository.class), mock(MediaChunkRepository.class), fileMetadataRepository);
 
   private final MockMvc mockMvc = MockMvcBuilders
       .standaloneSetup(new FilesController(gcsStorageService, filesService, mock(PipelineEventsService.class)))
@@ -98,7 +97,7 @@ class FilesErrorResponsesTest {
   @Test
   void deletingAFileThatIsNotYours_is404_loggedOnceAsAWarning_withTheFileId() throws Exception {
     UUID fileId = UUID.randomUUID();
-    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID)).thenReturn(Optional.empty());
+    when(fileMetadataRepository.markForDeletion(fileId, USER_ID)).thenReturn(0);
 
     mockMvc.perform(asUser(delete("/api/v1/files/{fileId}", fileId)))
         .andExpect(status().isNotFound())

@@ -1,7 +1,6 @@
 package com.cortex.cortex_ingestion.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 import java.util.UUID;
 
@@ -54,7 +53,7 @@ class FailedFileCleanupTest {
   @Test
   void aCleanedFile_isFailed_withoutChunks_butKeepsItsRowAndEvents() {
     FilesService filesService = new FilesService(pipelineEventRepository, mediaChunkRepository,
-        fileMetadataRepository, mock(GcsStorageService.class));
+        fileMetadataRepository);
     UUID fileId = forCleanupFile();
     chunk(fileId, 0);
     chunk(fileId, 1);
@@ -69,6 +68,25 @@ class FailedFileCleanupTest {
         .extracting(FileMetadata::getFileStatus).isEqualTo(FileStatusEnum.FAILED);
     assertThat(mediaChunkRepository.countByFileId(fileId)).as("media_chunk rows").isZero();
     assertThat(pipelineEventRepository.findByFileIdOrderByCreatedAtAsc(fileId)).as("its timeline").hasSize(2);
+  }
+
+  @Test
+  void aFileDeletedWhileRule2CleansIt_endsDeleted_notFailed() {
+    // Brick 14: rule 2 deleted the objects, then the user's Delete came before its last step.
+    FilesService filesService = new FilesService(pipelineEventRepository, mediaChunkRepository,
+        fileMetadataRepository);
+    UUID fileId = forCleanupFile();
+    chunk(fileId, 0);
+
+    filesService.deleteFile(fileId, "user-1");
+    assertThat(filesService.markCleaned(fileId)).as("rule 2's last step").isFalse();
+
+    entityManager.flush();
+    entityManager.clear();
+    assertThat(entityManager.getEntityManager()
+        .createNativeQuery("SELECT file_status FROM file_metadata WHERE id = :id")
+        .setParameter("id", fileId).getSingleResult()).isEqualTo("FOR_DELETION");
+    assertThat(mediaChunkRepository.countByFileId(fileId)).as("its chunks, left for rule 3").isEqualTo(1);
   }
 
   private UUID forCleanupFile() {

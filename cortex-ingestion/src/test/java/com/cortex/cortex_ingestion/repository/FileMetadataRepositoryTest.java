@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -167,6 +169,53 @@ class FileMetadataRepositoryTest {
     entityManager.clear();
     assertThat(read(pending)).isNull();
     assertThat(read(uploaded)).isNotNull();
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = FileStatusEnum.class, names = "FOR_DELETION", mode = EnumSource.Mode.EXCLUDE)
+  void markForDeletion_marksAFileOfAnyStatus_onlyForItsOwner(FileStatusEnum status) {
+    UUID fileId = saved(status);
+
+    assertThat(repo.markForDeletion(fileId, "someone-else")).as("not their file").isZero();
+    assertThat(nativeStatus(fileId)).isEqualTo(status.name());
+
+    assertThat(repo.markForDeletion(fileId, "user-1")).isEqualTo(1);
+    assertThat(nativeStatus(fileId)).isEqualTo("FOR_DELETION");
+
+    assertThat(repo.markForDeletion(fileId, "user-1")).as("deleted twice: already hidden").isZero();
+  }
+
+  @Test
+  void aForDeletionRow_ignoresThePipelinesWrites() {
+    // Brick 14's guard: a job still running for a deleted file cannot bring it back.
+    UUID fileId = saved(FileStatusEnum.PROCESSING);
+    repo.markForDeletion(fileId, "user-1");
+    Object[] playbackBefore = nativePlayback(fileId);
+
+    assertThat(repo.markUploaded(fileId, 5_000L, FileStatusEnum.TERMINAL_STATUSES)).as("markUploaded").isZero();
+    assertThat(repo.markRejected(fileId, UploadRejectReasonEnum.TOO_LONG, 1_000L, FileStatusEnum.TERMINAL_STATUSES))
+        .as("markRejected").isZero();
+    assertThat(chunked(fileId)).as("updateChunkingResult").isZero();
+    assertThat(repo.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES)).as("markForCleanup").isZero();
+    assertThat(repo.markCleaned(fileId)).as("markCleaned").isZero();
+    repo.updatePlaybackReady(fileId, "playback/" + fileId + "/index.mp4");
+    repo.updatePlaybackUnavailable(fileId);
+
+    assertThat(nativeStatus(fileId)).isEqualTo("FOR_DELETION");
+    assertThat(nativePlayback(fileId)).as("playback columns").containsExactly(playbackBefore);
+  }
+
+  /** Native: JPA cannot see a FOR_DELETION row. */
+  private Object nativeStatus(UUID fileId) {
+    return entityManager.getEntityManager()
+        .createNativeQuery("SELECT file_status FROM file_metadata WHERE id = :id")
+        .setParameter("id", fileId).getSingleResult();
+  }
+
+  private Object[] nativePlayback(UUID fileId) {
+    return (Object[]) entityManager.getEntityManager()
+        .createNativeQuery("SELECT playback_status, playback_object_name FROM file_metadata WHERE id = :id")
+        .setParameter("id", fileId).getSingleResult();
   }
 
   private UUID saved(FileStatusEnum status) {

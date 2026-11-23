@@ -8,8 +8,6 @@ import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.cortex.cortex_common.model.FileMetadata;
@@ -32,8 +30,6 @@ public class FilesService {
 
   private final FileMetadataRepository fileMetadataRepository;
 
-  private final GcsStorageService gcsStorageService;
-
   public List<FileResponseDTO> getAllFiles(String userId) {
     return fileMetadataRepository.findAllByUserId(userId).stream()
         .map((FileMetadata file) -> {
@@ -50,30 +46,12 @@ public class FilesService {
 
   @Transactional
   public void deleteFile(UUID fileId, String userId) {
-    FileMetadata metadata = fileMetadataRepository.findByIdAndUserId(fileId, userId)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found"));
+    // Only marks it: a job may still write. Rule 3 removes the objects and rows once nothing does.
+    if (fileMetadataRepository.markForDeletion(fileId, userId) == 0) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found");
+    }
 
-    String objectName = metadata.getObjectName();
-
-    mediaChunkRepository.deleteAllByFileId(fileId);
-    fileMetadataRepository.delete(metadata);
-    pipelineEventRepository.deleteAllByFileId(fileId);
-
-    log.info("[FilesService] DB records for fileId: {} queued for deletion", fileId);
-
-    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-      @Override
-      public void afterCommit() {
-        try {
-          gcsStorageService.deleteObject(objectName, fileId);
-          log.info("[FilesService] Successfully deleted GCS objects for fileId: {}, objectName: {}", fileId,
-              objectName);
-        } catch (Exception e) { // After commit: the rows are gone, so this can only be logged; the objects stay.
-          log.error("[FilesService] Failed to delete GCS objects for fileId: {}, objectName: {}", fileId,
-              objectName, e);
-        }
-      }
-    });
+    log.info("[FilesService] File marked for deletion: fileId: {}", fileId);
   }
 
   @Transactional
