@@ -98,7 +98,7 @@ public class GcsStorageService {
     MDC.put("fileId", fileMetadata.getId().toString());
     log.info("[GCSService] Saved file metadata: {}", fileMetadata);
 
-    return GetPresignedURLResponseDTO.builder().uploadUrl(url.toString())
+    return GetPresignedURLResponseDTO.builder().fileId(fileMetadata.getId()).uploadUrl(url.toString())
         .expiresIn(LocalDateTime.now().plusMinutes(expirationTime)).build();
   }
 

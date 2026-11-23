@@ -27,6 +27,7 @@ function isSettled(file: FileItem): boolean {
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [landedIds, setLandedIds] = useState<Set<string>>(new Set());
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -51,7 +52,10 @@ export default function DashboardPage() {
   const hasUnsettledFiles = files.some((file) => !isSettled(file));
 
   // A PENDING row is an upload not yet landed: no card. If it never lands, the sweep deletes it.
-  const visibleFiles = files.filter((file) => file.fileStatus !== "PENDING");
+  // Except one this tab just uploaded: it landed, only GCS's notification has not marked it yet.
+  const visibleFiles = files.filter(
+    (file) => file.fileStatus !== "PENDING" || landedIds.has(file.fileId)
+  );
 
   useEffect(() => {
     if (!hasUnsettledFiles) return;
@@ -75,7 +79,12 @@ export default function DashboardPage() {
             Upload and manage your media files
           </p>
         </div>
-        <FileUploadDialog onUploadComplete={fetchFiles} />
+        <FileUploadDialog
+          onUploadComplete={fetchFiles}
+          onFileUploaded={(fileId) =>
+            setLandedIds((prev) => new Set(prev).add(fileId))
+          }
+        />
       </div>
 
       {/* File Grid */}
