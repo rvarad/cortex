@@ -62,6 +62,12 @@ One unit of work inside a slice, and one commit. Sized by what you can review in
 sitting. Leaves the system working.
 _Avoid_: step. `MEDIA-PLAYBACK-PLAN.md` used "Step" for this; **brick** wins.
 
+**parked**
+Work seen while building something and set aside, that may be done later. Kept in
+`docs/parked/` until someone takes it up.
+_Avoid_: follow-up, backlog.
+_Not_: a plan's Not doing item that will never be done. That one goes with its plan.
+
 ## Flagged ambiguities
 
 - "step" meant both a unit of work and an SSE status event. Resolved: a unit of
