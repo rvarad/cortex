@@ -1,6 +1,6 @@
 # 0014. Exceptions propagate to a named boundary, and only the boundary handles them
 
-**Status:** Amended 2026-10-30 (accepted 2026-10-05)
+**Status:** Amended 2026-11-25 (accepted 2026-10-05)
 **Verified by:** Read of every `src/main` file on `reliability-hardening`, 2026-10-04.
 Counted 63 `catch` blocks, 37 `new RuntimeException(...)` wraps, and 20
 `kafkaTemplate.send(...)` calls, none of whose results is looked at. Nothing has been
@@ -316,3 +316,15 @@ New invariants:
   does.
 - A new pipeline event is glass box unless the next stage starts from it or the
   completion check runs on it.
+
+### 2026-11-25 — Terminal states and the sweep are decided
+
+The Decision left `FAILED` states and the sweeper for later, and What would change our
+mind asked for the boundary logs first. Both are now decided without that evidence:
+ADR-0015 (what fails a file, and the terminal statuses) and ADR-0016 (the sweep). The
+evidence decides retries, and a retry policy changes when a file fails, not what failed
+means. Retries, backoff, dead-letter topics and timeouts on outbound calls are still
+deferred here, with the same trigger.
+
+What this costs names a job killed with its container, which leaves no log. The sweep's
+rule 1 now fails that file after 45 minutes of silence, with one WARN.
