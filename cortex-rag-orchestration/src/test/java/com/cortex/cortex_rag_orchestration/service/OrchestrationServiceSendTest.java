@@ -89,7 +89,7 @@ class OrchestrationServiceSendTest {
     assertThat(trigger).as("a CompletionTriggerLostException in the thrown chain").isNotNull();
     assertThat(trigger.getCause()).isInstanceOf(KafkaException.class).hasMessage("broker unreachable");
 
-    // Not failed: the chunk is embedded, and the sweep completes the file (failed-states, Decisions).
+    // Not failed: the chunk is embedded, and the sweep completes the file (ADR-0015).
     verify(fileMetadataRepository, never()).markForCleanup(any(), any());
     assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
   }

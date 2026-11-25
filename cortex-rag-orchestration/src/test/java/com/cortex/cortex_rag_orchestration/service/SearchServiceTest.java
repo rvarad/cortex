@@ -54,7 +54,7 @@ class SearchServiceTest {
 
   @BeforeEach
   void theFileIsVisible() {
-    // getFileContext reads the file first: a deleted one is hidden, and has nothing to give (brick 13).
+    // getFileContext reads the file first: a deleted one is hidden, and has nothing to give (ADR-0015).
     when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(fileMetadata("demo.mp4")));
   }
 

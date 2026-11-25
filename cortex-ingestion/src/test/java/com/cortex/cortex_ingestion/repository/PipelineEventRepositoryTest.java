@@ -24,8 +24,8 @@ import com.cortex.cortex_ingestion.model.PipelineEvent;
 
 /**
  * The sweep's rule 1 query against the real schema (Flyway): a file is silent when its newest event,
- * or its row's created_at when it has none, is older than the cut-off for its status (failed-states,
- * brick 11). The cut-offs here are the real ones: 2 hours for UPLOADED, 45 minutes for the rest.
+ * or its row's created_at when it has none, is older than the cut-off for its status (ADR-0016).
+ * The cut-offs here are the real ones: 2 hours for UPLOADED, 45 minutes for the rest.
  */
 @DataJpaTest
 @Testcontainers
@@ -72,7 +72,7 @@ class PipelineEventRepositoryTest {
 
   @Test
   void findSilentFailedFiles_findsAForCleanupFileNothingWrites_only() {
-    // Rule 2 (brick 12): 45 minutes, so a media job still running for a file rag failed is left alone.
+    // Rule 2 (ADR-0016): 45 minutes, so a media job still running for a file rag failed is left alone.
     UUID silent = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 50);
     UUID active = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 10);
     UUID cleaned = fileWithLastEvent(FileStatusEnum.FAILED, 180); // so a second run picks nothing
@@ -85,7 +85,7 @@ class PipelineEventRepositoryTest {
 
   @Test
   void findSilentFilesForDeletion_findsADeletedFileNothingWrites_withItsObjectName() {
-    // Rule 3 (brick 13): native SQL, so it sees the FOR_DELETION rows that JPA cannot.
+    // Rule 3 (ADR-0016): native SQL, so it sees the FOR_DELETION rows that JPA cannot.
     UUID silent = fileWithLastEvent(FileStatusEnum.FOR_DELETION, 50);
     UUID active = fileWithLastEvent(FileStatusEnum.FOR_DELETION, 10);
     UUID failed = fileWithLastEvent(FileStatusEnum.FOR_CLEANUP, 180); // rule 2's, not rule 3's

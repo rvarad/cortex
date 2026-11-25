@@ -34,7 +34,7 @@ import com.cortex.cortex_common.repository.FileMetadataRepository;
 
 /**
  * A failed chunk fails its file: the listener marks it FOR_CLEANUP and sends PIPELINE_FAILED, then
- * throws, so the Kafka boundary still reports the record once (failed-states, brick 7). A chunk of
+ * throws, so the Kafka boundary still reports the record once (ADR-0015). A chunk of
  * a file that is already terminal calls no model.
  *
  * <p>Calls the listener method directly: the boundary's own behaviour is covered by
@@ -122,7 +122,7 @@ class OrchestrationServiceFailedFileTest {
 
   @Test
   void aChunkOfAMissingFile_callsNoModel() {
-    // Deleted (FOR_DELETION is hidden from JPA, so findById is empty): skipped like a terminal file (brick 13).
+    // Deleted (FOR_DELETION is hidden from JPA, so findById is empty): skipped like a terminal file (ADR-0015).
     when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.empty());
 
     orchestrationService.processMediaChunk(videoChunk());

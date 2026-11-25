@@ -65,7 +65,7 @@ public class PipelineEventsService {
       log.info("[PipelineEventsService] File is {}: its run has ended. Closing emitter for fileId: {}",
           file.getFileStatus(), fileId);
       // Its terminal event is a glass box send and can be lost, while the status was written:
-      // the page then learns the outcome from the row. Not stored (failed-states, brick 8).
+      // the page then learns the outcome from the row. Not stored (ADR-0015).
       PipelineEventDTO end = history.stream().anyMatch(event -> TERMINAL_EVENTS.contains(event.getEventType()))
           ? null
           : endOfRun(file);
@@ -171,7 +171,7 @@ public class PipelineEventsService {
 
   /**
    * Rule 1 of the sweep, for one silent file: completes it if all its work is saved, else fails it
-   * (failed-states, Decisions). One transaction: the row lock, the status and the stored event.
+   * (ADR-0016). One transaction: the row lock, the status and the stored event.
    */
   @Transactional
   public void failIfStuck(UUID fileId) {
@@ -188,7 +188,7 @@ public class PipelineEventsService {
     // WARN, not ERROR: no exception, nothing of ours failed in a way a stack trace explains.
     log.warn("[PipelineEventsService] No activity for too long: marked failed");
     // Stored in this transaction, with the status: so a failed file with no PIPELINE_FAILED was
-    // failed by an error (brick 8). processNewEvent broadcasts it to open pages after the commit.
+    // failed by an error (ADR-0015). processNewEvent broadcasts it to open pages after the commit.
     processNewEvent(PipelineEventDTO.builder().fileId(fileId)
         .eventType(PipelineEventEnum.PIPELINE_FAILED)
         .message(PipelineEventEnum.FAILED_BY_NO_PROGRESS_MESSAGE)
@@ -197,7 +197,7 @@ public class PipelineEventsService {
 
   /**
    * Ends the open pages of files whose run has ended but whose terminal event they never got (its
-   * glass box send was lost): sends brick 8's event, built from the row, and closes the stream.
+   * glass box send was lost): sends the event endOfRun builds from the row, and closes the stream.
    */
   public void endOpenStreamsOfEndedFiles() {
     for (UUID fileId : sseEmitterRegistry.openFileIds()) {

@@ -36,7 +36,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 /**
- * One run of the sweep (failed-states, brick 11): each status is judged by its own silence, a file
+ * One run of the sweep (ADR-0016): each status is judged by its own silence, a file
  * that cannot be judged is logged once and does not stop the others, and open pages are checked last.
  */
 class SweepTest {
@@ -109,7 +109,7 @@ class SweepTest {
     assertThat(errors.get(0).getThrowableProxy().getMessage()).isEqualTo("database down");
   }
 
-  // ---- Abandoned uploads (failed-states, brick 11b) ----
+  // ---- Abandoned uploads (ADR-0016) ----
 
   @Test
   void anAbandonedUpload_isDeletedRowFirst_thenItsObject() {
@@ -144,7 +144,7 @@ class SweepTest {
     verify(gcsStorageService, never()).deleteObject(any(), any());
   }
 
-  // ---- Rule 2 (failed-states, brick 12) ----
+  // ---- Rule 2 (ADR-0016) ----
 
   @Test
   void aSilentFailedFile_losesItsObjectsFirst_thenItsChunks() {
@@ -185,7 +185,7 @@ class SweepTest {
     return failed;
   }
 
-  // ---- Rule 3 (failed-states, brick 13) ----
+  // ---- Rule 3 (ADR-0016) ----
 
   @Test
   void aSilentDeletedFile_losesItsObjectsFirst_thenItsRows() {

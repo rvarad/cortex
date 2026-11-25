@@ -25,7 +25,7 @@ import com.cortex.cortex_ingestion.model.PipelineEvent;
 import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 /**
- * Rule 3's last step against the real schema (failed-states, brick 13): every row of a deleted file
+ * Rule 3's last step against the real schema (ADR-0016): every row of a deleted file
  * goes, in one transaction, and another file's rows stay. Counted in native SQL: JPA cannot see a
  * FOR_DELETION row.
  */

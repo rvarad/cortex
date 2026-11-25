@@ -149,7 +149,7 @@ public class OrchestrationService {
               .eventType(PipelineEventEnum.EMBEDDING_COMPLETE).message("Embedding complete")
               .build());
     } catch (CompletionTriggerLostException e) {
-      throw e; // Not failed: its work is saved, and the sweep completes the file (failed-states, Decisions).
+      throw e; // Not failed: its work is saved, and the sweep completes the file (ADR-0015).
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw failFile(event.getFileId(), new RuntimeException("Error processing media chunk", e));

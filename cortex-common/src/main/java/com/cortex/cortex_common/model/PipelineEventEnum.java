@@ -21,7 +21,7 @@ public enum PipelineEventEnum {
   NORMALISATION_COMPLETE,
   NORMALISATION_FAILED;
 
-  /** The message of a PIPELINE_FAILED for a file that failed by an error (failed-states, Decisions). */
+  /** The message of a PIPELINE_FAILED for a file that failed by an error (ADR-0015). */
   public static final String FAILED_BY_ERROR_MESSAGE =
       "Processing stopped because of an error on our side. Delete this file and upload it again.";
 

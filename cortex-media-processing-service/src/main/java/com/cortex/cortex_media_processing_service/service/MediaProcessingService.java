@@ -110,7 +110,7 @@ public class MediaProcessingService {
     try {
       runJob(objectName, fileId, userId);
     } catch (CompletionTriggerLostException e) {
-      throw e; // Not failed: its work is saved, and the sweep completes the file (failed-states, Decisions).
+      throw e; // Not failed: its work is saved, and the sweep completes the file (ADR-0015).
     } catch (Exception e) {
       failFile(fileId, e);
       throw e;

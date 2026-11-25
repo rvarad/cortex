@@ -20,7 +20,7 @@ public interface PipelineEventRepository extends JpaRepository<PipelineEvent, UU
 
   /**
    * The sweep's rule 1: files still in the pipeline with no activity since the cut-off for their
-   * status. Activity is the newest event, or the row's created_at when it has none (failed-states).
+   * status. Activity is the newest event, or the row's created_at when it has none (ADR-0016).
    * The cut-offs come from the JVM's clock, which wrote both created_at columns.
    */
   @Query(value = """

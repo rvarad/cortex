@@ -24,7 +24,7 @@ import com.cortex.cortex_common.repository.FileMetadataRepository;
 
 /**
  * The status writes against the real schema (Flyway): each changes a file that is not
- * terminal, and leaves a terminal one as it is (failed-states, brick 4).
+ * terminal, and leaves a terminal one as it is (ADR-0015).
  */
 @DataJpaTest
 @Testcontainers
@@ -121,7 +121,7 @@ class FileMetadataRepositoryTest {
 
   @Test
   void aForDeletionRow_isHiddenFromEveryRead() {
-    // @SQLRestriction (brick 13): every JPA read treats a deleted file as gone; only native SQL sees it.
+    // @SQLRestriction (ADR-0015): every JPA read treats a deleted file as gone; only native SQL sees it.
     String objectName = "uploads/media/" + UUID.randomUUID() + ".mp4";
     UUID deleted = entityManager.persistAndFlush(FileMetadata.builder()
         .fileDisplayName("talk.mp4")
@@ -159,7 +159,7 @@ class FileMetadataRepositoryTest {
 
   @Test
   void deleteIfPending_deletesAPendingRow_butLeavesAnUploadedOne() {
-    // The sweep's abandoned uploads (brick 11b): a webhook that marked the row UPLOADED first wins.
+    // The sweep's abandoned uploads (ADR-0016): a webhook that marked the row UPLOADED first wins.
     UUID pending = saved(FileStatusEnum.PENDING);
     UUID uploaded = saved(FileStatusEnum.UPLOADED);
 
@@ -187,7 +187,7 @@ class FileMetadataRepositoryTest {
 
   @Test
   void aForDeletionRow_ignoresThePipelinesWrites() {
-    // Brick 14's guard: a job still running for a deleted file cannot bring it back.
+    // A job still running for a deleted file cannot bring it back (ADR-0015).
     UUID fileId = saved(FileStatusEnum.PROCESSING);
     repo.markForDeletion(fileId, "user-1");
     Object[] playbackBefore = nativePlayback(fileId);

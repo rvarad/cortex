@@ -29,7 +29,7 @@ import lombok.NoArgsConstructor;
 @Entity
 @Table(name = "file_metadata")
 // A deleted file is gone to every JPA read, now and later: one filter here, not one at each read
-// that a new read could forget (failed-states, Decisions). Native SQL (the sweep, search) still sees it.
+// that a new read could forget (ADR-0015). Native SQL (the sweep, search) still sees it.
 @SQLRestriction("file_status <> 'FOR_DELETION'")
 public class FileMetadata {
 

@@ -33,7 +33,7 @@ import com.cortex.cortex_ingestion.service.SseEmitterRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * A terminal file's page always learns how its run ended (failed-states, brick 8). Its terminal
+ * A terminal file's page always learns how its run ended (ADR-0015). Its terminal
  * event is a glass box send and can be lost while the row's status is written; then the stream
  * sends one, built from the row, before it closes. Without it the page shows "connection lost".
  *

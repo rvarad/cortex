@@ -25,7 +25,7 @@ import com.cortex.cortex_ingestion.model.PipelineEvent;
 import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 /**
- * Rule 2's last step against the real schema (failed-states, brick 12): a cleaned file is FAILED and
+ * Rule 2's last step against the real schema (ADR-0016): a cleaned file is FAILED and
  * has no media_chunk rows, but keeps its row and its timeline, so its card and page still show it.
  */
 @DataJpaTest
@@ -72,7 +72,7 @@ class FailedFileCleanupTest {
 
   @Test
   void aFileDeletedWhileRule2CleansIt_endsDeleted_notFailed() {
-    // Brick 14: rule 2 deleted the objects, then the user's Delete came before its last step.
+    // Rule 2 deleted the objects, then the user's Delete came before its last step.
     FilesService filesService = new FilesService(pipelineEventRepository, mediaChunkRepository,
         fileMetadataRepository);
     UUID fileId = forCleanupFile();

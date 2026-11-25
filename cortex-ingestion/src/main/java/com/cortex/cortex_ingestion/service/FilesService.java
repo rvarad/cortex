@@ -65,7 +65,7 @@ public class FilesService {
 
   /**
    * Rule 2's last step, after the sweep deleted the file's objects: FOR_CLEANUP becomes FAILED and
-   * its media_chunk rows go, in one transaction. The row and its events stay (failed-states). False
+   * its media_chunk rows go, in one transaction. The row and its events stay (ADR-0015). False
    * when the file was no longer FOR_CLEANUP: nothing is changed.
    */
   @Transactional

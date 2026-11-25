@@ -22,7 +22,7 @@ import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 /**
  * The sweep's first run waits the processing silence after startup, so events that waited in Kafka
- * while ingestion was down are stored before anything is judged (failed-states, Decisions). Real
+ * while ingestion was down are stored before anything is judged (ADR-0016). Real
  * scheduling, with the silences set to seconds.
  */
 @SpringJUnitConfig(SweepScheduleTest.Config.class)

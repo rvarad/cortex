@@ -17,7 +17,7 @@ import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * The sweep (failed-states): ingestion's scheduled job. It deletes uploads that never landed; rule 1
+ * The sweep (ADR-0016): ingestion's scheduled job. It deletes uploads that never landed; rule 1
  * fails a file that has stopped making progress, judged by its silence, not its age; rule 2 removes
  * a failed file's data once nothing writes it any more; rule 3 removes a deleted file, data and rows.
  */
@@ -31,7 +31,7 @@ public class Sweep {
   private final GcsStorageService gcsStorageService;
   private final FilesService filesService;
 
-  /** UPLOADED files: covers the media queue wait (failed-states, Decisions, "N is a guess"). */
+  /** UPLOADED files: covers the media queue wait (ADR-0016, Why). */
   private final Duration uploadedSilence;
 
   /** CHUNKED and PROCESSING files: covers a silent transcode. */
@@ -103,7 +103,7 @@ public class Sweep {
   }
 
   /**
-   * GCS first, rows last (failed-states, Decisions): a crash between them leaves the file FOR_CLEANUP,
+   * GCS first, rows last (ADR-0016): a crash between them leaves the file FOR_CLEANUP,
    * and the next run does it again; deleting an object that is gone does nothing.
    */
   private void cleanFailedFile(UUID fileId) {
@@ -119,7 +119,7 @@ public class Sweep {
 
   /**
    * A PENDING row whose upload never landed: deleted, not failed. The pipeline never began, so
-   * there is nothing to keep (failed-states, brick 11b).
+   * there is nothing to keep (ADR-0016).
    */
   private void deleteAbandonedUploads(LocalDateTime createdBefore) {
     for (FileMetadata file : fileMetadataRepository.findByFileStatusAndCreatedAtBefore(FileStatusEnum.PENDING,

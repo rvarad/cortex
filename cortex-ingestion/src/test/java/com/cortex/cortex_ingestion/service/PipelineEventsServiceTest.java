@@ -135,7 +135,7 @@ class PipelineEventsServiceTest {
 
   @Test
   void anEventForAMissingFile_logsNoWarning() {
-    // Deleted while its job still runs (FOR_DELETION is hidden): normal, so INFO at most (brick 13).
+    // Deleted while its job still runs (FOR_DELETION is hidden): normal, so INFO at most (ADR-0015).
     service.processNewEvent(PipelineEventDTO.builder()
         .fileId(UUID.randomUUID())
         .eventType(PipelineEventEnum.EMBEDDING_COMPLETE)
@@ -146,7 +146,7 @@ class PipelineEventsServiceTest {
         .noneMatch(line -> line.getLevel().isGreaterOrEqual(Level.WARN));
   }
 
-  // ---- Rule 1 (failed-states, brick 11) ----
+  // ---- Rule 1 (ADR-0016) ----
 
   @Test
   void failIfStuck_onAFileWithChunksLeft_marksIt_andSavesOnePipelineFailed() {

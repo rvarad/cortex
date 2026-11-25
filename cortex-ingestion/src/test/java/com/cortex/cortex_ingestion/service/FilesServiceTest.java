@@ -25,7 +25,7 @@ import com.cortex.cortex_ingestion.repository.PipelineEventRepository;
 
 /**
  * FOR_CLEANUP is the sweep's to-do list, not something the user needs to know: the file list shows
- * it as FAILED, so the frontend never sees it. Delete only marks the file (failed-states, brick 14).
+ * it as FAILED, so the frontend never sees it. Delete only marks the file (ADR-0016).
  */
 class FilesServiceTest {
 
@@ -59,7 +59,7 @@ class FilesServiceTest {
 
   @Test
   void deleteFile_marksTheFile_andDeletesNoRowsAndNoObjects() {
-    // Brick 14: Delete only marks; rule 3 removes the objects, then the rows, once nothing writes them.
+    // Delete only marks; rule 3 removes the objects, then the rows, once nothing writes them (ADR-0016).
     UUID fileId = UUID.randomUUID();
     when(fileMetadataRepository.markForDeletion(fileId, "user-1")).thenReturn(1);
 
