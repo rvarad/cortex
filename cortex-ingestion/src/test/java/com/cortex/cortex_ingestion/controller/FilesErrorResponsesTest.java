@@ -18,6 +18,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -74,8 +76,7 @@ class FilesErrorResponsesTest {
       mock(Storage.class), fileMetadataRepository, mock(KafkaProducerService.class));
 
   private final FilesService filesService = new FilesService(
-      mock(PipelineEventRepository.class), mock(MediaChunkRepository.class), fileMetadataRepository,
-      gcsStorageService);
+      mock(PipelineEventRepository.class), mock(MediaChunkRepository.class), fileMetadataRepository);
 
   private final MockMvc mockMvc = MockMvcBuilders
       .standaloneSetup(new FilesController(gcsStorageService, filesService, mock(PipelineEventsService.class)))
@@ -96,7 +97,7 @@ class FilesErrorResponsesTest {
   @Test
   void deletingAFileThatIsNotYours_is404_loggedOnceAsAWarning_withTheFileId() throws Exception {
     UUID fileId = UUID.randomUUID();
-    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID)).thenReturn(Optional.empty());
+    when(fileMetadataRepository.markForDeletion(fileId, USER_ID)).thenReturn(0);
 
     mockMvc.perform(asUser(delete("/api/v1/files/{fileId}", fileId)))
         .andExpect(status().isNotFound())
@@ -116,7 +117,7 @@ class FilesErrorResponsesTest {
   @Test
   void renamingAFileThatIsNotYours_is404() throws Exception {
     UUID fileId = UUID.randomUUID();
-    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID)).thenReturn(Optional.empty());
+    when(fileMetadataRepository.rename(fileId, USER_ID, "talk.mp4")).thenReturn(0); // no row of theirs
 
     mockMvc.perform(asUser(patch("/api/v1/files/update/{fileId}", fileId))
         .contentType(MediaType.APPLICATION_JSON)
@@ -152,6 +153,19 @@ class FilesErrorResponsesTest {
         .andExpect(status().isGone())
         .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
         .andExpect(jsonPath("$.detail").value("This upload was rejected and is no longer available."));
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = FileStatusEnum.class, names = { "FOR_CLEANUP", "FAILED" })
+  void playbackForAFailedFile_is410(FileStatusEnum failed) throws Exception {
+    // Before cleanup and after: a failed file has no playback, as a rejected one has none.
+    UUID fileId = UUID.randomUUID();
+    when(fileMetadataRepository.findByIdAndUserId(fileId, USER_ID))
+        .thenReturn(Optional.of(file(fileId, failed)));
+
+    mockMvc.perform(asUser(get("/api/v1/files/{fileId}/playback-url", fileId)))
+        .andExpect(status().isGone())
+        .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
   }
 
   @Test

@@ -25,6 +25,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
@@ -38,6 +39,7 @@ import org.springframework.stereotype.Service;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.MediaFileManifestDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.kafka.KafkaSends;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
@@ -101,38 +103,79 @@ public class MediaProcessingService {
 
   /**
    * Runs one media job. Throws whatever goes wrong: the caller wraps this in BackgroundTask, the
-   * job's boundary, which is the one place its failures are reported (ADR-0014).
+   * job's boundary, which is the one place its failures are reported (ADR-0014). A failure fails the
+   * file first, here: after runJob's finally, so the job's own threads have stopped.
    */
   public void processMedia(String objectName, UUID fileId, String userId) throws Exception {
+    try {
+      runJob(objectName, fileId, userId);
+    } catch (CompletionTriggerLostException e) {
+      throw e; // Not failed: its work is saved, and the sweep completes the file (ADR-0015).
+    } catch (Exception e) {
+      failFile(fileId, e);
+      throw e;
+    }
+  }
+
+  /**
+   * Marks the file failed and, when that moved it, puts PIPELINE_FAILED on its timeline. The status
+   * is written here, not by the event's consumer: it must not depend on Kafka.
+   */
+  private void failFile(UUID fileId, Exception failure) {
+    try {
+      if (fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("Job failed, but the file is already terminal or deleted: not marked");
+        return;
+      }
+    } catch (RuntimeException e) { // Suppressed, never thrown: it must not replace the job's own failure.
+      failure.addSuppressed(e);
+      return;
+    }
+    sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+        .eventType(PipelineEventEnum.PIPELINE_FAILED).message(PipelineEventEnum.FAILED_BY_ERROR_MESSAGE).build());
+  }
+
+  private void runJob(String objectName, UUID fileId, String userId) throws Exception {
     log.info("Beginning chunking for file: {}", objectName);
 
     MediaProcessingContext ctx = null;
     Process ffmpegProcess = null;
     Thread normalisationThread = null;
+    FutureTask<Void> watcher = null;
+    FutureTask<Void> dispatcher = null;
 
     try {
       String streamUrl = gcsStorageService.getPresignedUrl(objectName);
 
-      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId)
-          .orElseThrow(() -> new IllegalStateException("File metadata not found for objectName: " + objectName));
+      // No row: deleted while this job waited (FOR_DELETION is hidden from JPA). Normal, so INFO, not an error.
+      FileMetadata fileMetadata = fileMetadataRepository.findById(fileId).orElse(null);
+      if (fileMetadata == null) {
+        log.info("File is gone or being deleted: job not run");
+        return;
+      }
+
+      // Failed or rejected while this job waited in the queue: there is nothing left to do.
+      if (fileMetadata.getFileStatus().isTerminal()) {
+        log.info("File is already {}: job not run", fileMetadata.getFileStatus());
+        return;
+      }
 
       MediaFileManifestDTO manifestDTO = probeMediaFile(streamUrl, fileId);
       if (manifestDTO.isCorrupted()) {
         // WARN: a rejected upload is the user's input, not our failure.
         log.warn("Media file is corrupted: {}", objectName);
         gcsStorageService.deleteObject(objectName);
-        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-        fileMetadata.setRejectionReason(UploadRejectReasonEnum.CORRUPTED);
-        fileMetadataRepository.save(fileMetadata);
+        if (!markRejected(fileMetadata, UploadRejectReasonEnum.CORRUPTED))
+          return;
 
-        sendPipelineEvent(fileId.toString(),
+        sendGlassBoxEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.UPLOAD_REJECTED)
                 .message("This file appears to be corrupted and cannot be processed. It will be deleted.")
                 .metadata(Map.of(
                     "contentType", fileMetadata.getContentType(),
                     "objectName", fileMetadata.getObjectName(),
                     "bucketName", fileMetadata.getBucketName(),
-                    "fileStatus", fileMetadata.getFileStatus().toString()))
+                    "fileStatus", FileStatusEnum.REJECTED.name()))
                 .build());
 
         return;
@@ -140,9 +183,8 @@ public class MediaProcessingService {
 
       if (manifestDTO.getDuration_s() > maxDurationInSeconds) {
         gcsStorageService.deleteObject(objectName);
-        fileMetadata.setFileStatus(FileStatusEnum.REJECTED);
-        fileMetadata.setRejectionReason(UploadRejectReasonEnum.TOO_LONG);
-        fileMetadataRepository.save(fileMetadata);
+        if (!markRejected(fileMetadata, UploadRejectReasonEnum.TOO_LONG))
+          return;
         log.info("[MediaProcessingService] File too long: {}", objectName);
 
         PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileMetadata.getId())
@@ -155,10 +197,10 @@ public class MediaProcessingService {
                 "durationInSeconds", manifestDTO.getDuration_s(),
                 "objectName", fileMetadata.getObjectName(),
                 "bucketName", fileMetadata.getBucketName(),
-                "fileStatus", fileMetadata.getFileStatus().toString()))
+                "fileStatus", FileStatusEnum.REJECTED.name()))
             .build();
 
-        sendPipelineEvent(fileId.toString(), pipelineEventDTO);
+        sendGlassBoxEvent(fileId.toString(), pipelineEventDTO);
 
         return;
       }
@@ -194,7 +236,7 @@ public class MediaProcessingService {
           try {
             // The sends stay outside the catch below: a failed send is not a failed
             // normalisation, so it goes to the boundary and leaves playback as it is.
-            sendPipelineEvent(fileId.toString(),
+            sendGlassBoxEvent(fileId.toString(),
                 PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_STARTED)
                     .message("Generating playback version").build());
 
@@ -223,13 +265,13 @@ public class MediaProcessingService {
               // Persist the terminal playback state BEFORE announcing, so any
               // consumer reacting to NORMALIZATION_FAILED reads UNAVAILABLE.
               fileMetadataRepository.updatePlaybackUnavailable(fileId);
-              sendPipelineEvent(fileId.toString(),
+              sendTrigger(fileId.toString(),
                   PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_FAILED)
                       .message("Playback version could not be generated").build());
               return;
             }
 
-            sendPipelineEvent(fileId.toString(),
+            sendTrigger(fileId.toString(),
                 PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.NORMALISATION_COMPLETE)
                     .message("Playback version is ready").build());
           } finally {
@@ -239,12 +281,12 @@ public class MediaProcessingService {
       }
 
       // Tasks the job waits for (ADR-0014, 2026-10-16): a failure comes back to it through get().
-      FutureTask<Void> watcher = new FutureTask<>(() -> {
+      watcher = new FutureTask<>(() -> {
         MDC.put("fileId", fileId.toString()); // a new thread has no MDC
         startDirectoryWatcher(processContext);
         return null;
       });
-      FutureTask<Void> dispatcher = new FutureTask<>(() -> {
+      dispatcher = new FutureTask<>(() -> {
         MDC.put("fileId", fileId.toString());
         startUploadDispatcher(processContext);
         return null;
@@ -259,7 +301,7 @@ public class MediaProcessingService {
 
       PipelineEventDTO pipelineEventDTO = PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNKING_STARTED).message("Chunking started").build();
-      sendPipelineEvent(fileId.toString(), pipelineEventDTO);
+      sendGlassBoxEvent(fileId.toString(), pipelineEventDTO);
 
       Process chunking = startFFmpegChunkingProcess(streamUrl, videoPattern, audioPattern,
           processContext.getManifestDTO());
@@ -286,12 +328,15 @@ public class MediaProcessingService {
       // full save, so it leaves playbackObjectName alone (the normalization thread
       // owns that column). This makes totalChunks durable before CHUNKING_COMPLETE
       // fires and before embeddings finish, so the completion check can read it.
-      fileMetadataRepository.updateChunkingResult(fileId, FileStatusEnum.CHUNKED, totalChunksCount,
+      if (fileMetadataRepository.updateChunkingResult(fileId, FileStatusEnum.CHUNKED, totalChunksCount,
           manifestDTO.getDuration_s(), manifestDTO.isHasVideo(), manifestDTO.isHasAudio(),
-          manifestDTO.getVideoCodec());
+          manifestDTO.getVideoCodec(), FileStatusEnum.TERMINAL_STATUSES) == 0) {
+        log.info("Chunking done, but the file became terminal or was deleted: no CHUNKING_COMPLETE");
+        return;
+      }
       log.info("[MediaProcessingService] Set totalChunks = {} for fileId: {}", totalChunksCount, fileId);
 
-      sendPipelineEvent(fileId.toString(),
+      sendTrigger(fileId.toString(),
           PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.CHUNKING_COMPLETE)
               .message("Media chunking finished successfully").metadata(Map.of("totalChunks", totalChunksCount))
               .build());
@@ -306,6 +351,11 @@ public class MediaProcessingService {
         }
         ctx.getUploadQueue().clear();
         ctx.getIsRunning().set(false);
+        // The watcher can queue a chunk on its last pass, so the queue is cleared again once it has
+        // stopped: nothing of this job uploads after the job ends.
+        awaitStopped(watcher);
+        ctx.getUploadQueue().clear();
+        awaitStopped(dispatcher); // not running, nothing queued: it leaves its loop within one poll
         // shortcut: waits for every job's uploads; correct while one file is processed at a time.
         // A per-job count replaces it (per-job-upload-wait.md).
         uploadSlots.acquireUninterruptibly(MAX_CONCURRENT_UPLOADS);
@@ -409,7 +459,7 @@ public class MediaProcessingService {
   private MediaFileManifestDTO probeMediaFile(String streamUrl, UUID fileId) throws Exception {
     log.info("Probing media file: {}", streamUrl);
 
-    sendPipelineEvent(fileId.toString(),
+    sendGlassBoxEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_STARTED)
             .message("Analyzing media file").build());
 
@@ -459,7 +509,7 @@ public class MediaProcessingService {
 
     log.info("FFprobe process completed successfully, video: {}, audio: {}", video, audio);
 
-    sendPipelineEvent(fileId.toString(),
+    sendGlassBoxEvent(fileId.toString(),
         PipelineEventDTO.builder().fileId(fileId).eventType(PipelineEventEnum.PROBE_COMPLETE)
             .message("Media analyzed")
             .metadata(Map.of(
@@ -693,12 +743,9 @@ public class MediaProcessingService {
         }
       }
 
-      if (previousVideoChunk != null)
-        safeEnqueue(processContext, previousVideoChunk);
-      if (previousAudioChunk != null)
-        safeEnqueue(processContext, previousAudioChunk);
-
-      log.info("Watcher stopped. Final chunks queued for upload");
+      // The last chunks it holds are not queued here: cleanup's sweep queues them on success, and
+      // on a failed job nothing may upload after it ends.
+      log.info("Watcher stopped");
     }
   }
 
@@ -730,7 +777,7 @@ public class MediaProcessingService {
       log.info("Uploading chunk: {}", fileName);
 
       // Upload event for pipeline
-      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_STARTED).chunkIndex(index)
           .message(mediaType + " chunk upload started").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -739,7 +786,7 @@ public class MediaProcessingService {
       processContext.getChunkUploadStatusMap().put(chunkPath.toString(), UploadStatus.UPLOADED);
 
       // Upload event for pipeline
-      sendPipelineEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
+      sendGlassBoxEvent(fileId.toString(), PipelineEventDTO.builder().fileId(fileId)
           .eventType(PipelineEventEnum.CHUNK_UPLOAD_COMPLETE).chunkIndex(index)
           .message(mediaType + " chunk upload completed").metadata(Map.of("mediaType", mediaType)).build());
 
@@ -764,7 +811,7 @@ public class MediaProcessingService {
             .chunkIndex(index).startTime(chunkPair.getStart_s()).endTime(chunkPair.getEnd_s())
             .status(MediaChunk.Status.UPLOADED).userId(processContext.getUserId()).build());
 
-        sendPipelineEvent(fileId.toString(),
+        sendGlassBoxEvent(fileId.toString(),
             PipelineEventDTO.builder().fileId(fileId).chunkId(chunk.getId())
                 .eventType(PipelineEventEnum.MEDIA_CHUNK_READY).chunkIndex(index)
                 .message("Media chunk ready for processing").metadata(Map.of("chunkId", chunk.getId())).build());
@@ -900,6 +947,20 @@ public class MediaProcessingService {
     uploadSlots.release(MAX_CONCURRENT_UPLOADS);
   }
 
+  /** For the job's finally: waits for a helper to end. Null when the job failed before it started. */
+  private static void awaitStopped(Future<Void> helper) {
+    if (helper == null)
+      return;
+    try {
+      helper.get(5, TimeUnit.SECONDS);
+    } catch (ExecutionException e) { // Not rethrown: it is the job's failure, already on its way, or came after it.
+    } catch (TimeoutException e) { // Carry on: a throw here would hide the job's own failure.
+      log.warn("A helper of the job did not stop within 5 s", e);
+    } catch (InterruptedException e) { // Carry on, as above.
+      Thread.currentThread().interrupt();
+    }
+  }
+
   /** get() on a finished helper throws its failure, if it had one. */
   private static void rethrowIfFailed(List<Future<Void>> helpers) throws Exception {
     for (Future<Void> helper : helpers) {
@@ -949,11 +1010,42 @@ public class MediaProcessingService {
   }
 
   /**
-   * Waits for the broker: a failed send throws here and fails the job, or the
-   * thread it runs on (ADR-0014).
+   * The raw send: waits for the broker, and a failed send throws (ADR-0014). Call
+   * {@link #sendGlassBoxEvent} or {@link #sendTrigger}, not this: the kind decides what a failure means.
    */
   private void sendPipelineEvent(String key, PipelineEventDTO event) {
     KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, key, event));
+  }
+
+  /**
+   * Called after the object is deleted: a rejected object is of no use, whatever the status. False
+   * when the write changed no row, and the caller then sends no event.
+   */
+  private boolean markRejected(FileMetadata file, UploadRejectReasonEnum reason) {
+    if (fileMetadataRepository.markRejected(file.getId(), reason, file.getFileSize(),
+        FileStatusEnum.TERMINAL_STATUSES) == 0) {
+      log.info("File {}, but it is already terminal or deleted: no event sent", reason);
+      return false;
+    }
+    return true;
+  }
+
+  /** A completion trigger: a failed send throws its own type, so a boundary can tell it apart (ADR-0014, 2026-10-30). */
+  private void sendTrigger(String key, PipelineEventDTO event) {
+    try {
+      sendPipelineEvent(key, event);
+    } catch (RuntimeException e) {
+      throw new CompletionTriggerLostException(event.getEventType(), e);
+    }
+  }
+
+  /** A glass box event: it only feeds the timeline, so a failed send is a WARN (ADR-0014, 2026-10-30). */
+  private void sendGlassBoxEvent(String key, PipelineEventDTO event) {
+    try {
+      sendPipelineEvent(key, event);
+    } catch (RuntimeException e) { // Not rethrown: the timeline loses one event; the file's work must go on.
+      log.warn("Glass box event {} not sent", event.getEventType(), e);
+    }
   }
 
   private int extractChunkNumber(String fileName) {

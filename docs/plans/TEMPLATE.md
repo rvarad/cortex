@@ -79,6 +79,8 @@ now?"): this one asks "is the feature real?"
        a fact is true whether or not this feature ships. Decisions graduate to
        docs/adr/ when they stop being live questions. If at merge you're staring at
        900 lines you don't know what to do with, graduation was being skipped.
+     - At merge, the Not doing items you may still do move to docs/parked/. The rest
+       go with this file.
      - No code blocks. The plan says which bricks exist and how you'll know each one
        works, not how to implement them.
 -->

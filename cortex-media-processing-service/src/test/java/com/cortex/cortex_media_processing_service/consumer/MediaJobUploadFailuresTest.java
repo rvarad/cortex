@@ -9,12 +9,14 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.ProcessBuilder.Redirect;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,9 +29,11 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import org.apache.kafka.common.KafkaException;
@@ -41,6 +45,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -49,6 +54,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.cortex.cortex_common.dto.ChunkUploadedEventDTO;
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.CompletionTriggerLostException;
 import com.cortex.cortex_common.model.FileMetadata;
 import com.cortex.cortex_common.model.FileStatusEnum;
 import com.cortex.cortex_common.model.MediaChunk;
@@ -65,12 +71,16 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
-import ch.qos.logback.core.read.ListAppender;
+import ch.qos.logback.core.AppenderBase;
 
 /**
- * The upload workers are work the job waits for, through cleanup: a chunk that can't be uploaded
+ * The real job on a real video: what fails it, and what doesn't.
+ *
+ * <p>The upload workers are work the job waits for, through cleanup: a chunk that can't be uploaded
  * must fail the job, not leave a hole in the file (ADR-0014). Cleanup tries a failed chunk once
- * more, so a chunk that fails once still completes.
+ * more, so a chunk that fails once still completes. A failed send depends on its kind (ADR-0014,
+ * 2026-10-30): a glass box event is a WARN and the job goes on; a completion trigger is one ERROR
+ * of its own type.
  *
  * <p>Runs the real job, ffprobe and ffmpeg included, on a 130 s video made by ffmpeg: three 60 s
  * chunk pairs. GCS, Kafka and the repositories are fakes. Skipped when ffmpeg or ffprobe is
@@ -83,14 +93,20 @@ class MediaJobUploadFailuresTest {
 
   private static Path video;
 
+  /** The same video with its moov atom at the end, so the job remuxes it: normalisation runs. */
+  private static Path moovAtEnd;
+
   private final Logger cortexLogger = (Logger) LoggerFactory.getLogger("com.cortex");
 
+  /** Thread-safe: on a failed job, its watcher still logs after the job ends. */
+  private final List<ILoggingEvent> captured = new CopyOnWriteArrayList<>();
+
   /** Freezes each event as it arrives — logback reads MDC lazily, from whoever asks first. */
-  private final ListAppender<ILoggingEvent> captured = new ListAppender<>() {
+  private final AppenderBase<ILoggingEvent> appender = new AppenderBase<>() {
     @Override
     protected void append(ILoggingEvent event) {
       event.prepareForDeferredProcessing();
-      super.append(event);
+      captured.add(event);
     }
   };
 
@@ -128,6 +144,14 @@ class MediaJobUploadFailuresTest {
         .redirectErrorStream(true).redirectOutput(Redirect.DISCARD).start();
     assertThat(ffmpeg.waitFor(60, TimeUnit.SECONDS)).as("the test video was made").isTrue();
     assertThat(ffmpeg.exitValue()).isZero();
+
+    moovAtEnd = videoDir.resolve("talk-moov-at-end.mp4");
+    // No faststart: ffmpeg writes the moov atom last by default.
+    Process copy = new ProcessBuilder("ffmpeg", "-hide_banner", "-y", "-i", video.toString(), "-c", "copy",
+        moovAtEnd.toString())
+        .redirectErrorStream(true).redirectOutput(Redirect.DISCARD).start();
+    assertThat(copy.waitFor(60, TimeUnit.SECONDS)).as("the moov-at-end video was made").isTrue();
+    assertThat(copy.exitValue()).isZero();
   }
 
   @BeforeEach
@@ -135,33 +159,33 @@ class MediaJobUploadFailuresTest {
     ReflectionTestUtils.setField(mediaProcessingService, "maxDurationInSeconds", 3600.0);
     ReflectionTestUtils.setField(mediaProcessingService, "pipelineEventsTopic", "pipeline-events");
 
-    byte[] videoBytes = Files.readAllBytes(video);
-    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn(video.toString());
-    when(gcsStorageService.readHead(anyString(), anyInt()))
-        .thenAnswer(invocation -> Arrays.copyOf(videoBytes, Math.min(videoBytes.length, invocation.getArgument(1))));
+    useVideo(video);
     when(fileMetadataRepository.findById(fileId)).thenReturn(Optional.of(FileMetadata.builder()
         .id(fileId)
         .fileDisplayName("talk.mp4")
         .bucketName("cortex-dev-bucket")
         .objectName(objectName)
-        .fileSize((long) videoBytes.length)
+        .fileSize(Files.size(video))
         .fileStatus(FileStatusEnum.UPLOADED)
         .contentType("video/mp4")
         .userId("user-1")
         .build()));
+    // The file is not terminal, so the write changes its row (FileMetadataRepositoryTest).
+    when(fileMetadataRepository.updateChunkingResult(any(), any(), anyInt(), anyDouble(), anyBoolean(), anyBoolean(),
+        any(), any())).thenReturn(1);
     when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
     when(kafkaTemplate.send(anyString(), any())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
     when(mediaChunkRepository.save(any(MediaChunk.class))).thenAnswer(invocation -> withId(invocation.getArgument(0)));
     when(gcsStorageService.uploadChunk(anyString(), any(Path.class)))
         .thenAnswer(invocation -> "chunks/" + invocation.<Path>getArgument(1).getFileName());
 
-    captured.start();
-    cortexLogger.addAppender(captured);
+    appender.start();
+    cortexLogger.addAppender(appender);
   }
 
   @AfterEach
   void tearDown() throws IOException {
-    cortexLogger.detachAppender(captured);
+    cortexLogger.detachAppender(appender);
     executor.shutdown();
     MDC.clear();
     // Only if a test failed: the job deletes its own work directory.
@@ -206,7 +230,7 @@ class MediaJobUploadFailuresTest {
 
     // ---- and the file is not completed with chunk 1 missing ----
     verify(fileMetadataRepository, never()).updateChunkingResult(any(), any(), anyInt(), anyDouble(), anyBoolean(),
-        anyBoolean(), any());
+        anyBoolean(), any(), any());
     assertThat(pipelineEventsSent()).as("pipeline events sent")
         .doesNotContain(PipelineEventEnum.CHUNKING_COMPLETE);
 
@@ -235,7 +259,7 @@ class MediaJobUploadFailuresTest {
     assertThat(linesAt(Level.WARN)).as("WARN lines")
         .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_001.wav"));
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
-        eq(true), eq(true), eq("h264"));
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
     assertThat(workDir()).as("the work directory").doesNotExist();
   }
 
@@ -262,13 +286,161 @@ class MediaJobUploadFailuresTest {
     assertThat(linesAt(Level.WARN)).as("WARN lines")
         .anySatisfy(warning -> assertThat(warning.getFormattedMessage()).contains("audio_chunk_002.wav"));
     verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
-        eq(true), eq(true), eq("h264"));
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
     assertThat(workDir()).as("the work directory").doesNotExist();
+  }
+
+  @Test
+  void theLastChunkFailingTwice_isNotUploadedAgain_afterTheJobEnds() throws Exception {
+    // ---- Arrange: the last audio chunk never uploads, so the job fails at cleanup's last check.
+    // Its watcher still holds that chunk, and queues it when its loop ends ----
+    AtomicInteger lastChunkUploads = new AtomicInteger();
+    when(gcsStorageService.uploadChunk(anyString(), any(Path.class))).thenAnswer(invocation -> {
+      Path chunk = invocation.getArgument(1);
+      if (chunk.getFileName().toString().equals("audio_chunk_002.wav")) {
+        lastChunkUploads.incrementAndGet();
+        throw new IOException("GCS refuses this chunk");
+      }
+      return "chunks/" + chunk.getFileName();
+    });
+
+    // ---- Act: run the job, then give any thread it left running the time to act ----
+    runTheJob();
+    int whenTheJobEnded = lastChunkUploads.get();
+    Thread.sleep(2_000); // the watcher polls every 0.5 s, the dispatcher every 1 s
+
+    // ---- Assert: once, and cleanup's retry; nothing after the job ended ----
+    assertThat(whenTheJobEnded).as("uploads of the last chunk while the job ran").isEqualTo(2);
+    assertThat(lastChunkUploads.get()).as("uploads of the last chunk, 2 s after the job ended").isEqualTo(2);
+  }
+
+  @Test
+  void aFailedProbeCompleteSend_isOneWarn_andTheJobStillChunks() throws Exception {
+    // ---- Arrange: only the glass box event after the probe can't be sent ----
+    failOnlyTheSendOf(PipelineEventEnum.PROBE_COMPLETE);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: the timeline lost one event; the file did not ----
+    assertThat(linesAt(Level.ERROR)).as("ERROR lines from our code").isEmpty();
+    assertThat(linesAt(Level.WARN)).as("WARN lines about the lost event")
+        .filteredOn(warning -> warning.getFormattedMessage().contains("PROBE_COMPLETE"))
+        .hasSize(1);
+    verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
+    assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
+  }
+
+  @Test
+  void aFailedChunkingCompleteSend_isOneError_ofTheTriggerType() throws Exception {
+    // ---- Arrange: the chunks are saved; only the trigger that announces them can't be sent ----
+    failOnlyTheSendOf(PipelineEventEnum.CHUNKING_COMPLETE);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, from the job's boundary, that says a trigger was lost ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    ILoggingEvent error = errors.get(0);
+    assertThat(error.getLoggerName()).as("logged by a boundary").isEqualTo(BackgroundTask.class.getName());
+    assertThat(error.getFormattedMessage()).as("the media job's boundary").contains("media job");
+    assertThat(triggerLostWithCause(error.getThrowableProxy(), "broker unreachable"))
+        .as("a CompletionTriggerLostException, with the send's exception under it").isTrue();
+
+    // ---- and the file is not failed: its work is saved, and it stays CHUNKED ----
+    verify(fileMetadataRepository).updateChunkingResult(eq(fileId), eq(FileStatusEnum.CHUNKED), eq(3), anyDouble(),
+        eq(true), eq(true), eq("h264"), eq(FileStatusEnum.TERMINAL_STATUSES));
+    verify(fileMetadataRepository, never()).markForCleanup(any(), any());
+    assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
+  }
+
+  @Test
+  void aFailedReadOfTheHead_failsTheFile_withOneErrorAndOnePipelineFailed() throws Exception {
+    // ---- Arrange: the file is not terminal, so marking it changes its row ----
+    failTheReadOfTheHead();
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES)).thenReturn(1);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: the file is marked, the timeline says so, and the boundary logs it once ----
+    verify(fileMetadataRepository).markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES);
+    assertThat(pipelineEvents()).as("PIPELINE_FAILED events")
+        .filteredOn(event -> event.getEventType() == PipelineEventEnum.PIPELINE_FAILED)
+        .singleElement()
+        .extracting(PipelineEventDTO::getMessage)
+        .isEqualTo("Processing stopped because of an error on our side. Delete this file and upload it again.");
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    assertThat(errors.get(0).getLoggerName()).as("logged by the job's boundary")
+        .isEqualTo(BackgroundTask.class.getName());
+    assertThat(errors.get(0).getMDCPropertyMap()).containsEntry("fileId", fileId.toString());
+  }
+
+  @Test
+  void aMarkingThatThrows_isSuppressed_underTheJobsOwnFailure() throws Exception {
+    // ---- Arrange: the job fails, and so does the write that marks its file ----
+    failTheReadOfTheHead();
+    when(fileMetadataRepository.markForCleanup(fileId, FileStatusEnum.TERMINAL_STATUSES))
+        .thenThrow(new DataAccessResourceFailureException("database down"));
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, about the job's own failure, with the marking's under it ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    IThrowableProxy logged = errors.get(0).getThrowableProxy();
+    assertThat(logged.getClassName()).as("the job's own failure").isEqualTo(UncheckedIOException.class.getName());
+    assertThat(logged.getSuppressed()).as("the marking's failure, suppressed")
+        .extracting(IThrowableProxy::getMessage).containsExactly("database down");
+    assertThat(pipelineEventsSent()).as("pipeline events sent").doesNotContain(PipelineEventEnum.PIPELINE_FAILED);
+  }
+
+  @Test
+  void aFailedNormalisationCompleteSend_isOneError_ofTheTriggerType() throws Exception {
+    // ---- Arrange: moov at the end, so the job remuxes; only the trigger after it can't be sent ----
+    useVideo(moovAtEnd);
+    failOnlyTheSendOf(PipelineEventEnum.NORMALISATION_COMPLETE);
+
+    // ---- Act ----
+    runTheJob();
+
+    // ---- Assert: one ERROR, from the normalisation thread's boundary, that says a trigger was lost ----
+    List<ILoggingEvent> errors = linesAt(Level.ERROR);
+    assertThat(errors).as("ERROR lines from our code").hasSize(1);
+    ILoggingEvent error = errors.get(0);
+    assertThat(error.getLoggerName()).as("logged by a boundary").isEqualTo(BackgroundTask.class.getName());
+    assertThat(error.getFormattedMessage()).as("the normalisation thread's boundary").contains("normalisation");
+    assertThat(triggerLostWithCause(error.getThrowableProxy(), "broker unreachable"))
+        .as("a CompletionTriggerLostException, with the send's exception under it").isTrue();
+
+    // ---- and chunking, on its own thread, still finished ----
+    assertThat(pipelineEventsSent()).as("pipeline events sent").contains(PipelineEventEnum.CHUNKING_COMPLETE);
   }
 
   /** Where the job keeps its chunks and playback file while it runs. */
   private Path workDir() {
     return Paths.get("/tmp/media-processing-service-chunks", objectName);
+  }
+
+  /** GCS serves this video: the job streams it, and reads its head to find the moov atom. */
+  private void useVideo(Path file) throws IOException {
+    byte[] bytes = Files.readAllBytes(file);
+    when(gcsStorageService.getPresignedUrl(anyString())).thenReturn(file.toString());
+    when(gcsStorageService.readHead(anyString(), anyInt()))
+        .thenAnswer(invocation -> Arrays.copyOf(bytes, Math.min(bytes.length, invocation.getArgument(1))));
+  }
+
+  private void failOnlyTheSendOf(PipelineEventEnum failing) {
+    when(kafkaTemplate.send(any(), any(), any())).thenAnswer(invocation -> {
+      PipelineEventDTO event = invocation.getArgument(2);
+      return event.getEventType() == failing
+          ? CompletableFuture.failedFuture(new KafkaException("broker unreachable"))
+          : CompletableFuture.completedFuture(null);
+    });
   }
 
   private void runTheJob() throws Exception {
@@ -279,16 +451,26 @@ class MediaJobUploadFailuresTest {
   }
 
   private List<PipelineEventEnum> pipelineEventsSent() {
+    return pipelineEvents().stream().map(PipelineEventDTO::getEventType).toList();
+  }
+
+  private List<PipelineEventDTO> pipelineEvents() {
     ArgumentCaptor<Object> sent = ArgumentCaptor.forClass(Object.class);
     verify(kafkaTemplate, atLeastOnce()).send(any(), any(), sent.capture());
     return sent.getAllValues().stream()
         .filter(PipelineEventDTO.class::isInstance)
-        .map(event -> ((PipelineEventDTO) event).getEventType())
+        .map(PipelineEventDTO.class::cast)
         .toList();
   }
 
+  /** The read that looks for the moov atom, after the probe: a failure there fails the job. */
+  private void failTheReadOfTheHead() {
+    doThrow(new UncheckedIOException("readHead failed", new IOException("GCS unreachable")))
+        .when(gcsStorageService).readHead(anyString(), anyInt());
+  }
+
   private List<ILoggingEvent> linesAt(Level level) {
-    return captured.list.stream().filter(logged -> logged.getLevel() == level).toList();
+    return captured.stream().filter(logged -> logged.getLevel() == level).toList();
   }
 
   private static MediaChunk withId(MediaChunk chunk) {
@@ -301,6 +483,16 @@ class MediaJobUploadFailuresTest {
     for (IThrowableProxy current = proxy; current != null; current = current.getCause()) {
       if (message.equals(current.getMessage())) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  /** Somewhere in the chain: the trigger type, with the send's own exception as its cause. */
+  private static boolean triggerLostWithCause(IThrowableProxy proxy, String message) {
+    for (IThrowableProxy current = proxy; current != null; current = current.getCause()) {
+      if (current.getClassName().equals(CompletionTriggerLostException.class.getName())) {
+        return current.getCause() != null && message.equals(current.getCause().getMessage());
       }
     }
     return false;

@@ -130,3 +130,85 @@ through the region, into a URL, into DNS — four layers — before anything com
 and the error looked like a networking problem. A required value that is absent must
 stop things immediately. And a shared bean fails widely: "Does the old path break the
 same way?" is the cheapest possible bisect.
+
+## 2026-11-22 — Hibernate 6.6 applies `@SQLRestriction` to `findById` and to JPQL bulk updates, not to native SQL
+
+**Area:** spring
+**Cost:** Shaped a design (ADR-0015). Nothing broke.
+
+**What was seen.** With `@SQLRestriction("file_status <> 'FOR_DELETION'")` on
+`FileMetadata`, a `FOR_DELETION` row was not found by `findById`, by
+`findByIdForUpdate` (a JPQL select with a lock), or by the derived queries
+(`findByIdAndUserId`, `findByObjectName`, `findAllByUserId`). The JPQL bulk updates
+(`rename` and the pipeline's status writes) changed 0 rows. The SQL that Hibernate
+logged for a bulk update carried the condition: `... where fm1_0.id=? and
+fm1_0.file_status='FOR_CLEANUP' and (fm1_0.file_status <> 'FOR_DELETION')`. Native
+queries still found the row.
+
+**What was actually happening.** Hibernate 6.6 adds the restriction to every SQL
+statement it builds for the entity: `em.find`, derived queries, JPQL selects and JPQL
+bulk updates. It leaves native SQL alone.
+
+**How it was found.** `FileMetadataRepositoryTest` against Postgres (Testcontainers):
+`aForDeletionRow_isHiddenFromEveryRead` and `aForDeletionRow_ignoresThePipelinesWrites`.
+The SQL came from the test output.
+
+**What changed.** ADR-0015 relies on it: one annotation hides a deleted file from every
+JPA read and keeps the pipeline's JPQL writes off it. The sweep and search use native
+SQL, so they still see the rows. `SearchService.getFileContext` reads chunks from
+`media_chunk` by file id, which the restriction on `FileMetadata` cannot reach, so it
+reads the file first.
+
+**The general lesson.** A restriction on an entity hides that entity's rows. A query on
+another table that holds its id still sees them.
+
+## 2026-11-22 — EventSource gives its error handler no HTTP status, so a 404 looks like a lost connection
+
+**Area:** browser
+**Cost:** The page of a deleted file said the connection was lost, not that the file
+was gone.
+
+**What was seen.** A file's page was open while the file was set to `FOR_DELETION` in
+psql. After a reload, the page showed the lost-connection line, and ingestion's log
+showed a 404 for the stream's request (`/api/v1/files/<id>/events`).
+
+**What was actually happening.** The browser's `EventSource` fires `error` with a plain
+`Event`: no status and no body. A 404 on the open reaches the same handler as a dropped
+connection, and `subscribeToPipelineEvents` passes every error on the same way.
+
+**How it was found.** By hand in dev: the page, next to ingestion's log, after the
+reload.
+
+**What changed.** When the stream fails before any event arrives, the file page fetches
+the file list. If the file is not in it, the page shows "This file no longer exists"
+(`cortex-frontend/src/app/files/[fileId]/page.tsx`, with a comment on the line). Only
+the open can answer 404, so a failure after an event is still a lost connection.
+
+## 2026-11-23 — `created_at` holds the JVM's local time, but Postgres's `now()` is UTC
+
+**Area:** postgres
+**Cost:** SQL that compares `created_at` with `now()` is 5½ hours off on this machine.
+The sweep avoids it. A check by hand in psql does not.
+
+**What was seen.** In one psql session, during a manual check of the sweep's rule 1, a
+file's newest event had `created_at` 14:57, and `now() AT TIME ZONE 'UTC'` read 09:32,
+minutes after that event. On 2026-11-25, `SHOW TimeZone` gave `Etc/UTC`, and `now()`
+read 11:06 while the machine's clock read 16:36 IST.
+
+**What was actually happening.** `FileMetadata` and `PipelineEvent` set `created_at` in
+`@PrePersist` with `LocalDateTime.now()`: the JVM's default zone, IST on this machine.
+The columns are `timestamp without time zone`, so the zone is not stored. The database
+session's zone is UTC, so `now()`, compared with these columns, is 5½ hours behind
+them.
+
+**How it was found.** psql queries that printed `created_at` next to
+`now() AT TIME ZONE 'UTC'`, then `SHOW TimeZone`.
+
+**What changed.** Nothing in code. The sweep already calculated its cut-offs in Java,
+from the clock that writes the columns, and passes them to its queries (`Sweep.run`,
+ADR-0016). For a check by hand, compare with `now() AT TIME ZONE 'Asia/Kolkata'`. Not
+checked: the JVM's zone inside the containers. The columns hold whatever zone the
+writing JVM has.
+
+**The general lesson.** A `timestamp without time zone` column holds the writer's
+wall-clock time. Compare it with the writer's clock, not with the database's.
