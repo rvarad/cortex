@@ -4,30 +4,30 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { deleteFile, getPresignedUrl, uploadToGcs } from "@/lib/api";
-import { UploadPanel } from "./upload-panel";
-
-export type UploadStatus = "uploading" | "done" | "failed";
 
 export interface Upload {
   /** Local key. The server's fileId only exists once the signed URL is made. */
   id: number;
   fileId: string | null;
-  name: string;
-  contentType: string;
   totalBytes: number;
   sentBytes: number;
-  status: UploadStatus;
-  error?: string;
+  /** "done" stays in the list: the file is PENDING until its webhook, and the
+   *  dashboard only shows a PENDING file this tab owns. */
+  status: "uploading" | "done";
 }
 
 interface UploadsContextValue {
   uploads: Upload[];
   start: (file: File) => void;
+  /** Stops the send; the file is then deleted, as for a failure. */
+  cancel: (id: number) => void;
   /** Goes up whenever an upload adds, finishes or deletes a file row. The
    *  dashboard refetches on it — the dialog that started the upload has
    *  already closed, so it can't tell the list to refresh. */
@@ -45,8 +45,8 @@ export function useUploads(): UploadsContextValue {
 }
 
 /**
- * Owns every upload in flight. Mounted at the root so an upload — and its row
- * in the panel — survives navigation away from the dashboard.
+ * Owns every upload in flight. Mounted at the root so an upload survives
+ * navigation away from the dashboard, and its tile picks it up again on return.
  */
 export function UploadsProvider({ children }: { children: React.ReactNode }) {
   const [uploads, setUploads] = useState<Upload[]>([]);
@@ -74,8 +74,6 @@ export function UploadsProvider({ children }: { children: React.ReactNode }) {
         {
           id,
           fileId: null,
-          name: file.name,
-          contentType: file.type,
           totalBytes: file.size,
           sentBytes: 0,
           status: "uploading",
@@ -113,13 +111,22 @@ export function UploadsProvider({ children }: { children: React.ReactNode }) {
 
           update(id, { status: "done", sentBytes: file.size });
         } catch (error) {
-          update(id, {
-            status: "failed",
-            error: error instanceof Error ? error.message : "Upload failed",
-          });
+          // Out of the list first, so the tile goes now rather than after the delete.
+          setUploads((current) => current.filter((upload) => upload.id !== id));
 
-          // A half-sent file has no object behind it; left alone it would sit
-          // on the dashboard as PENDING for good.
+          // A cancel is the user's own doing; a failure would otherwise be a
+          // tile that silently vanishes.
+          if (!(error instanceof DOMException && error.name === "AbortError")) {
+            toast.error(
+              `Upload of ${file.name} failed: ${
+                error instanceof Error ? error.message : "unknown error"
+              }`,
+              { duration: 6000 } // Sonner's 4 s is short for an error that names a file.
+            );
+          }
+
+          // Marks the half-sent file deleted; the sweep removes it, and any
+          // object that landed after all.
           if (fileId) {
             await deleteFile(fileId).catch((deleteError) =>
               console.error("Failed to delete abandoned upload:", deleteError)
@@ -134,15 +141,26 @@ export function UploadsProvider({ children }: { children: React.ReactNode }) {
     [update]
   );
 
+  // A reload or a closed tab kills the XHR, so the browser asks first. Only a
+  // real unload: navigating inside the app keeps the provider and the upload.
+  const isUploading = uploads.some((upload) => upload.status === "uploading");
+  useEffect(() => {
+    if (!isUploading) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [isUploading]);
+
+  const cancel = useCallback((id: number) => {
+    controllers.current.get(id)?.abort();
+  }, []);
+
   const value = useMemo<UploadsContextValue>(
-    () => ({ uploads, start, listVersion }),
-    [uploads, start, listVersion]
+    () => ({ uploads, start, cancel, listVersion }),
+    [uploads, start, cancel, listVersion]
   );
 
   return (
-    <UploadsContext.Provider value={value}>
-      {children}
-      {uploads.length > 0 && <UploadPanel uploads={uploads} />}
-    </UploadsContext.Provider>
+    <UploadsContext.Provider value={value}>{children}</UploadsContext.Provider>
   );
 }

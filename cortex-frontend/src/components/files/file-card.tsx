@@ -25,13 +25,17 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ArrowUp,
+  X,
 } from "lucide-react";
 import { formatFileSize, formatDuration, formatMediaType } from "@/lib/helpers";
 import { useMediaPlayer } from "@/components/media/media-player-provider";
+import { useUploads } from "./uploads-provider";
 import type { FileItem, RejectionReason } from "@/lib/types";
 import { RenameDialog } from "./rename-dialog";
 import { DeleteDialog } from "./delete-dialog";
 import Link from "next/link";
+import { motion, useReducedMotion } from "framer-motion";
 
 const REJECTION_LABELS: Record<RejectionReason, string> = {
   TOO_BIG: "Too large",
@@ -48,6 +52,21 @@ export function FileCard({ file, onMutate }: FileCardProps) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const player = useMediaPlayer();
+  const { uploads, cancel } = useUploads();
+  const reduceMotion = useReducedMotion();
+
+  // This tab is still sending the file. Once it lands, the tile looks like any
+  // other PENDING file until the webhook marks it UPLOADED.
+  const upload =
+    file.fileStatus === "PENDING"
+      ? uploads.find(
+          (item) => item.fileId === file.fileId && item.status === "uploading"
+        )
+      : undefined;
+  const uploadPercent =
+    upload && upload.totalBytes > 0
+      ? Math.floor((upload.sentBytes / upload.totalBytes) * 100)
+      : 0;
 
   const isFailure =
     file.fileStatus === "REJECTED" || file.fileStatus === "FAILED";
@@ -178,65 +197,122 @@ export function FileCard({ file, onMutate }: FileCardProps) {
             </div>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              nativeButton={true}
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="File options"
-                  className="h-8 w-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+          {upload ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => cancel(upload.id)}
+              aria-label={`Cancel upload of ${file.fileDisplayName}`}
+              title="Cancel upload"
+              className="h-8 w-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:bg-red-500/10 hover:text-red-500"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                nativeButton={true}
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="File options"
+                    className="h-8 w-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setRenameOpen(true)}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setDeleteOpen(true)}
+                  variant="destructive"
                 >
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setRenameOpen(true)}>
-                <Pencil className="mr-2 h-4 w-4" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => setDeleteOpen(true)}
-                variant="destructive"
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            {playbackSlot}
-            {isProcessed && (
-              <Link
-                href={`/chat?attach=${file.fileId}`}
-                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+        {upload ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs text-muted-foreground">
+              {formatFileSize(upload.sentBytes)} of{" "}
+              {formatFileSize(upload.totalBytes)}
+            </span>
+
+            {/* The chip is the progress bar: the fill grows with the percent,
+                and a pulse runs across the filled part while bytes move. */}
+            <span
+              role="progressbar"
+              aria-label={`Uploading ${file.fileDisplayName}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={uploadPercent}
+              className={cn(
+                badgeVariants({ variant: "outline" }),
+                "relative h-6 min-w-34 shrink-0 px-2.5 tabular-nums border-blue-400/35 text-blue-300"
+              )}
+            >
+              <span
+                className="absolute inset-y-0 left-0 overflow-hidden bg-sky-300/25 transition-[width] duration-300"
+                style={{ width: `${uploadPercent}%` }}
               >
-                <MessageSquare />
-                Chat
-              </Link>
-            )}
+                {/* The wave: a lighter band crossing the fill. `left` is relative
+                    to the fill, so -40% to 100% takes the 40%-wide band from just
+                    off one edge to just off the other. */}
+                {!reduceMotion && (
+                  <motion.span
+                    className="absolute inset-y-0 w-2/5 bg-sky-200/30 blur-sm"
+                    initial={{ left: "-40%" }}
+                    animate={{ left: "100%" }}
+                    transition={{ duration: 1.8, ease: "easeInOut", repeat: Infinity }}
+                  />
+                )}
+              </span>
+              <span className="relative flex items-center gap-1.5">
+                <ArrowUp className="size-3" />
+                Uploading · {uploadPercent}%
+              </span>
+            </span>
           </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              {playbackSlot}
+              {isProcessed && (
+                <Link
+                  href={`/chat?attach=${file.fileId}`}
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                >
+                  <MessageSquare />
+                  Chat
+                </Link>
+              )}
+            </div>
 
-          <Link
-            href={`/files/${file.fileId}`}
-            title="View processing history"
-            className={cn(
-              badgeVariants({ variant: "outline" }),
-              "h-6 shrink-0 gap-1.5 px-2.5 transition-colors",
-              statusChip.className
-            )}
-          >
-            <statusChip.StatusIcon
-              className={cn(statusChip.spin && "animate-spin")}
-            />
-            {statusChip.label}
-          </Link>
-        </div>
+            <Link
+              href={`/files/${file.fileId}`}
+              title="View processing history"
+              className={cn(
+                badgeVariants({ variant: "outline" }),
+                "h-6 shrink-0 gap-1.5 px-2.5 transition-colors",
+                statusChip.className
+              )}
+            >
+              <statusChip.StatusIcon
+                className={cn(statusChip.spin && "animate-spin")}
+              />
+              {statusChip.label}
+            </Link>
+          </div>
+        )}
       </Card>
 
       <RenameDialog

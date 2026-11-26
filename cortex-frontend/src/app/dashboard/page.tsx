@@ -57,9 +57,7 @@ export default function DashboardPage() {
   // Except one this tab is uploading or has uploaded: its card shows from the first byte, and
   // after landing it waits only on GCS's notification to be marked UPLOADED.
   const ownUploadIds = new Set(
-    uploads.flatMap((upload) =>
-      upload.fileId && upload.status !== "failed" ? [upload.fileId] : []
-    )
+    uploads.flatMap((upload) => (upload.fileId ? [upload.fileId] : []))
   );
   const visibleFiles = files.filter(
     (file) => file.fileStatus !== "PENDING" || ownUploadIds.has(file.fileId)
