@@ -1,6 +1,7 @@
 package com.cortex.cortex_rag_orchestration.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cortex.cortex_common.dto.AnswerSegmentDTO;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -71,5 +72,26 @@ class SegmentParserTest {
         assertThat(emitted.get(0).getText()).isEqualTo("first");
         assertThat(emitted.get(1).getText()).isEqualTo("second");
         assertThat(emitted.get(1).getCites()).containsExactly(2);
+    }
+
+    @Test
+    void aFailingCallback_comesOutUnchanged_notAsAParseFailure() {
+        // The callback sends the segment to the client. A client that left makes it throw, and the
+        // caller must see that, not "the answer was bad JSON".
+        IllegalStateException clientLeft = new IllegalStateException("client left");
+        SegmentParser<AnswerSegmentDTO> sending = new SegmentParser<>(new ObjectMapper(), AnswerSegmentDTO.class,
+                segment -> {
+                    throw clientLeft;
+                });
+
+        assertThatThrownBy(() -> sending.feed("[{\"text\":\"first\",\"cites\":[1]}"))
+                .isSameAs(clientLeft);
+    }
+
+    @Test
+    void aSegmentThatIsNotTheExpectedJson_isAParseFailure() {
+        assertThatThrownBy(() -> parser.feed("[{\"text\":}"))
+                .isInstanceOf(SegmentParseException.class);
+        assertThat(emitted).isEmpty();
     }
 }

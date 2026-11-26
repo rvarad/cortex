@@ -1,5 +1,6 @@
 package com.cortex.cortex_ingestion.controller;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 
@@ -90,7 +91,8 @@ public class FilesController {
   }
 
   @GetMapping(value = "/{fileId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-  public SseEmitter getPipelineEvents(@PathVariable UUID fileId, Authentication authentication) {
+  public SseEmitter getPipelineEvents(@PathVariable UUID fileId, Authentication authentication)
+      throws IOException {
     log.info("Received request for pipeline events for fileId: {}", fileId);
 
     String userId = authentication.getName();

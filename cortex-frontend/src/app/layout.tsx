@@ -30,8 +30,11 @@ export default function RootLayout({
               dashboard and a file's chat page, and both can drive it. */}
           <MediaPlayerProvider>
             <UploadsProvider>
-              {children}
+              {/* Before the page: React runs sibling effects in order, and the Toaster only
+                  shows toasts sent after its effect subscribes. After the page, a toast sent
+                  on first load (the "Sign-in failed" one) was lost. */}
               <Toaster richColors position="bottom-right" />
+              {children}
             </UploadsProvider>
           </MediaPlayerProvider>
         </AuthProvider>

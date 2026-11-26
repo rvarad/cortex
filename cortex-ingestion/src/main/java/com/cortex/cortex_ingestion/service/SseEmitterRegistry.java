@@ -1,6 +1,7 @@
 package com.cortex.cortex_ingestion.service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -48,11 +49,16 @@ public class SseEmitterRegistry {
     activeEmitters.forEach(emitter -> {
       try {
         emitter.send(SseEmitter.event().name(event.getEventType().name()).data(event));
-      } catch (Exception e) {
-        log.error("Failed to send event to emitter for fileId {}.", event.getFileId(), e);
+      } catch (Exception e) { // The page was closed: normal, and it must not fail the Kafka record.
+        log.info("Client left; stopped sending events for fileId {}", event.getFileId());
         removeConnection(event.getFileId(), emitter);
       }
     });
+  }
+
+  /** The files that have a page open now. A copy: the registry changes as pages come and go. */
+  public Set<UUID> openFileIds() {
+    return Set.copyOf(emitterRegistry.keySet());
   }
 
   public void completeEmitters(UUID fileId) {
@@ -63,8 +69,9 @@ public class SseEmitterRegistry {
     activeEmitters.forEach(emitter -> {
       try {
         emitter.complete();
-      } catch (Exception e) {
-        log.error("Failed to complete emitter for fileId {}.", fileId, e);
+      } catch (Exception e) { // Carry on: one stream failing to close must not leave the others open.
+        // INFO, no stack trace: it fails because the page has already gone (ADR-0014's SSE rule).
+        log.info("Client left; its stream was already closed for fileId {}", fileId);
       }
     });
 

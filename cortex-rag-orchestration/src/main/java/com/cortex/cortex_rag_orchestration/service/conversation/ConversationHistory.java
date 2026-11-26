@@ -481,7 +481,7 @@ public class ConversationHistory {
     try {
       return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
       });
-    } catch (Exception e) {
+    } catch (Exception e) { // Kept as text: the call is still recorded, and replayed as {"raw": ...}.
       log.warn("[conversation] tool arguments were not a JSON object; storing as text: {}", json);
       return Map.of("raw", json);
     }

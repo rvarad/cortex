@@ -1,6 +1,7 @@
 package com.cortex.cortex_media_processing_service.service.processing;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -28,4 +29,7 @@ public class MediaProcessingContext {
   private final Map<Integer, ChunkPair> chunkPairMap = new ConcurrentHashMap<>();
   private final Map<String, UploadStatus> chunkUploadStatusMap = new ConcurrentHashMap<>();
   private final BlockingQueue<Path> uploadQueue = new LinkedBlockingQueue<>();
+
+  /** Why each chunk's uploads failed, oldest first, keyed like chunkUploadStatusMap. */
+  private final Map<String, List<Exception>> chunkUploadFailures = new ConcurrentHashMap<>();
 }

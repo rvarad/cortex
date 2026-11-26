@@ -1,5 +1,6 @@
 package com.cortex.cortex_rag_orchestration.util;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.function.Consumer;
 
@@ -81,13 +82,15 @@ public class SegmentParser<T> {
         buffer.append(c);
         depth--;
         if (depth == 0) {
+          T segment;
           try {
-            T segment = objectMapper.readValue(buffer.toString(), type);
-            onSegmentComplete.accept(segment);
-            buffer.setLength(0);
-          } catch (Exception e) {
-            throw new RuntimeException("Failed to parse segment", e);
+            segment = objectMapper.readValue(buffer.toString(), type);
+          } catch (JsonProcessingException e) {
+            throw new SegmentParseException("Failed to parse segment", e);
           }
+          buffer.setLength(0);
+          // Outside the try: the callback sends to the client, and its failure is not a parse failure.
+          onSegmentComplete.accept(segment);
         }
       } else if (depth > 0) {
         buffer.append(c);

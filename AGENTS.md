@@ -35,10 +35,11 @@ cd cortex-frontend && npm run dev | build | lint
 
 - Explore, then plan, then code. Don't edit during exploration.
 - **Decisions** live in `docs/adr/`, **facts learned by running things** in
-  `docs/findings/`, **the feature in flight** in `docs/plans/`. Read the relevant
-  ADRs before proposing an architecture change; several were expensive to reach.
-  Before writing either kind, read its template: `docs/adr/0000-template.md`,
-  `docs/findings/TEMPLATE.md`.
+  `docs/findings/`, **the feature in flight** in `docs/plans/`, **parked work** in
+  `docs/parked/`. Read the relevant ADRs before proposing an architecture change;
+  several were expensive to reach. Before writing an ADR, a finding or a parked entry,
+  read its template: `docs/adr/0000-template.md`, `docs/findings/TEMPLATE.md`,
+  `docs/parked/TEMPLATE.md`.
 - Vocabulary is in `CONTEXT.md`. Use those words; don't drift to the synonyms it
   lists under `_Avoid_`.
 - If a reader would think a line is a mistake, the comment saying why goes on that

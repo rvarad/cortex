@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -77,18 +78,18 @@ public class ConversationController {
     // it expires.
     SseEmitter emitter = new SseEmitter(180_000L);
 
-    Thread.startVirtualThread(() -> {
-      try {
+    // In MDC before the task is built, so the answer's thread carries it into every log line.
+    MDC.put("conversationId", id.toString());
+    try {
+      Thread.startVirtualThread(SseEvents.answering(emitter, "conversation answer", () -> {
         conversationService.ask(id, userId, question.getQuestion(), question.getFileIds(),
             event -> SseEvents.send(emitter, event));
 
         SseEvents.done(emitter);
-        emitter.complete();
-      } catch (Exception e) {
-        log.error("Error answering in conversation {}: {}", id, question.getQuestion(), e);
-        emitter.completeWithError(e);
-      }
-    });
+      }));
+    } finally {
+      MDC.remove("conversationId");
+    }
 
     return emitter;
   }

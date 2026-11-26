@@ -37,6 +37,17 @@ The uploaded file as it arrived is the **original** (or **master**). The normali
 playback copy and the chunks are **derivatives**. Multiple copies is the intended
 design, not a smell.
 
+**failed**
+A file that can never reach `COMPLETED` unless a person acts (a retry, a new
+upload). We find this in one of two ways: an error stops its processing, or it
+makes no progress for too long. Status `FOR_CLEANUP` until the sweep removes
+its data, then `FAILED`. The UI shows both as failed.
+_Not_: **rejected** — the user's input was bad (too big, too long, corrupted);
+the pipeline did its job. _Not_: a file without a playback copy — it is still
+searchable and ends `COMPLETED` with playback `UNAVAILABLE`. _Not_: a file whose
+work is all done but whose completion check never ran again — that file is stuck,
+and running the check again completes it.
+
 **context window**
 The model's input limit. Always two words.
 _Not_: `MediaProcessingContext`, the per-job state object in media-processing —
@@ -50,6 +61,12 @@ planning session. Not a shipping boundary; merges are decided separately.
 One unit of work inside a slice, and one commit. Sized by what you can review in one
 sitting. Leaves the system working.
 _Avoid_: step. `MEDIA-PLAYBACK-PLAN.md` used "Step" for this; **brick** wins.
+
+**parked**
+Work seen while building something and set aside, that may be done later. Kept in
+`docs/parked/` until someone takes it up.
+_Avoid_: follow-up, backlog.
+_Not_: a plan's Not doing item that will never be done. That one goes with its plan.
 
 ## Flagged ambiguities
 
