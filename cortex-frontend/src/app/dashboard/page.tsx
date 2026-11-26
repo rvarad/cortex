@@ -5,6 +5,7 @@ import { getFiles } from "@/lib/api";
 import type { FileItem } from "@/lib/types";
 import { FileCard } from "@/components/files/file-card";
 import { FileUploadDialog } from "@/components/files/file-upload-dialog";
+import { useUploads } from "@/components/files/uploads-provider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Inbox } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -27,6 +28,7 @@ function isSettled(file: FileItem): boolean {
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const { listVersion } = useUploads();
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -39,9 +41,10 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // listVersion moves when an upload adds, finishes or deletes a file.
   useEffect(() => {
     fetchFiles();
-  }, [fetchFiles]);
+  }, [fetchFiles, listVersion]);
 
   // One poll for the whole grid while anything is still moving, instead of an
   // SSE stream per card. The tiles only need coarse status; the fine-grained
@@ -70,7 +73,7 @@ export default function DashboardPage() {
             Upload and manage your media files
           </p>
         </div>
-        <FileUploadDialog onUploadComplete={fetchFiles} />
+        <FileUploadDialog />
       </div>
 
       {/* File Grid */}

@@ -116,22 +116,39 @@ export async function getPresignedUrl(body: {
   });
 }
 
-export async function uploadToGcs(
+/**
+ * Direct upload to GCS — no credentials, no JSON content-type. XHR rather than
+ * fetch, because fetch reports nothing while it sends a body. Rejects with an
+ * AbortError when `signal` fires.
+ */
+export function uploadToGcs(
   uploadUrl: string,
-  file: File
+  file: File,
+  onProgress: (sentBytes: number) => void,
+  signal: AbortSignal
 ): Promise<void> {
-  // Direct upload to GCS — no credentials, no JSON content-type
-  const res = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": file.type,
-    },
-    body: file,
-  });
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Upload cancelled", "AbortError"));
+      return;
+    }
 
-  if (!res.ok) {
-    throw new Error(`GCS upload failed: ${res.status}`);
-  }
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", file.type);
+
+    xhr.upload.onprogress = (event) => onProgress(event.loaded);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`GCS upload failed: ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onabort = () =>
+      reject(new DOMException("Upload cancelled", "AbortError"));
+
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
 }
 
 export async function updateFileName(fileId: string, displayName: string) {
