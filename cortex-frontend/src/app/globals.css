@@ -150,3 +150,38 @@ body {
   box-shadow: 0 0 20px color-mix(in oklab, var(--primary) 15%, transparent),
     0 0 60px color-mix(in oklab, var(--primary) 5%, transparent);
 }
+
+/* Scrollbars: a thin rounded thumb, no track. */
+
+/* Firefox only. Chrome 121+ also reads these properties, and once it does it
+   ignores every ::-webkit-scrollbar rule below — so they are fenced off. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent)
+      transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The transparent border plus content-box clip insets the thumb, so it reads
+   as 6px wide while the 10px gutter stays easy to grab. */
+::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+}

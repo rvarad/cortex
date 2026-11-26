@@ -5,6 +5,7 @@ import { getFiles } from "@/lib/api";
 import type { FileItem } from "@/lib/types";
 import { FileCard } from "@/components/files/file-card";
 import { FileUploadDialog } from "@/components/files/file-upload-dialog";
+import { useUploads } from "@/components/files/uploads-provider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Inbox } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -27,7 +28,7 @@ function isSettled(file: FileItem): boolean {
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [landedIds, setLandedIds] = useState<Set<string>>(new Set());
+  const { uploads, listVersion } = useUploads();
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -40,9 +41,10 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // listVersion moves when an upload adds, finishes or deletes a file.
   useEffect(() => {
     fetchFiles();
-  }, [fetchFiles]);
+  }, [fetchFiles, listVersion]);
 
   // One poll for the whole grid while anything is still moving, instead of an
   // SSE stream per card. The tiles only need coarse status; the fine-grained
@@ -52,9 +54,13 @@ export default function DashboardPage() {
   const hasUnsettledFiles = files.some((file) => !isSettled(file));
 
   // A PENDING row is an upload not yet landed: no card. If it never lands, the sweep deletes it.
-  // Except one this tab just uploaded: it landed, only GCS's notification has not marked it yet.
+  // Except one this tab is uploading or has uploaded: its card shows from the first byte, and
+  // after landing it waits only on GCS's notification to be marked UPLOADED.
+  const ownUploadIds = new Set(
+    uploads.flatMap((upload) => (upload.fileId ? [upload.fileId] : []))
+  );
   const visibleFiles = files.filter(
-    (file) => file.fileStatus !== "PENDING" || landedIds.has(file.fileId)
+    (file) => file.fileStatus !== "PENDING" || ownUploadIds.has(file.fileId)
   );
 
   useEffect(() => {
@@ -79,12 +85,7 @@ export default function DashboardPage() {
             Upload and manage your media files
           </p>
         </div>
-        <FileUploadDialog
-          onUploadComplete={fetchFiles}
-          onFileUploaded={(fileId) =>
-            setLandedIds((prev) => new Set(prev).add(fileId))
-          }
-        />
+        <FileUploadDialog />
       </div>
 
       {/* File Grid */}

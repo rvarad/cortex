@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/providers/auth-provider";
 import { MediaPlayerProvider } from "@/components/media/media-player-provider";
+import { UploadsProvider } from "@/components/files/uploads-provider";
 import { Toaster } from "@/components/ui/sonner";
 
 const inter = Inter({
@@ -28,11 +29,13 @@ export default function RootLayout({
           {/* Mounted at the root so the dock survives navigation between the
               dashboard and a file's chat page, and both can drive it. */}
           <MediaPlayerProvider>
-            {/* Before the page: React runs sibling effects in order, and the Toaster only
-                shows toasts sent after its effect subscribes. After the page, a toast sent
-                on first load (the "Sign-in failed" one) was lost. */}
-            <Toaster richColors position="bottom-right" />
-            {children}
+            <UploadsProvider>
+              {/* Before the page: React runs sibling effects in order, and the Toaster only
+                  shows toasts sent after its effect subscribes. After the page, a toast sent
+                  on first load (the "Sign-in failed" one) was lost. */}
+              <Toaster richColors position="bottom-right" />
+              {children}
+            </UploadsProvider>
           </MediaPlayerProvider>
         </AuthProvider>
       </body>
