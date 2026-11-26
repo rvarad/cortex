@@ -1,9 +1,8 @@
 # Upload progress
 
-**Status:** Brick 1 is in as a WIP commit and passed in the browser; `development`
-is merged in. The panel is dropped for progress on the tile itself (design agreed
-2026-11-26, option E on the mock-up canvas). Brick 2 passed in the browser.
-Brick 3 is written and waiting on its DoD check.
+**Status:** All three bricks are done and passed in the browser (2026-11-26),
+including brick 1's recheck after the `development` merge. Progress shows on the
+tile itself; the panel was dropped (option E on the mock-up canvas).
 **Branch:** feature/frontend-implementation
 **Started:** 2026-10-29
 
@@ -68,7 +67,7 @@ cancelled or failed upload leaves nothing behind, and a failure says so.
 
 None.
 
-#### 1. Uploads move to a provider, with XHR progress — 🚧 WIP COMMITTED
+#### 1. Uploads move to a provider, with XHR progress — ✅ DONE
 
 `uploadToGcs` sends with XHR and takes a progress callback and an `AbortSignal`.
 `UploadsProvider` in the root layout owns the uploads: start (signed URL, then
@@ -95,7 +94,7 @@ and the ✕ appears on hover and on Tab. Cancel at ~30%: the `PUT` is cancelled,
 network: a toast names the file, the tile disappears. With "Reduce motion" on in
 the OS, the chip fills but doesn't pulse.
 
-#### 3. Leave warning — 🚧 IN PROGRESS
+#### 3. Leave warning — ✅ DONE
 
 A `beforeunload` handler is set while any upload is running.
 
