@@ -5,10 +5,11 @@ chunks, refuses without evidence, broadens visibly past attached files, and its
 step events, streamed answer and citation clicks all work in the browser (Bricks
 1–6). Conversations are stored and a follow-up resolves against the turns before
 it, and the Slice 2 frontend (sidebar, reload, delete) works in the browser (Bricks
-7, 10). Built but not verified: `recall_conversation` (never seen being called), the
-answer at the round cap and "nothing new" (loop hardening), and the 404,
-stop-mid-answer and long-answer checks on Brick 8. Next: run those checks before
-writing any new code.
+7, 10). Live checks finished 2026-11-27: Bricks 8, 9 and loop hardening are verified,
+and Bricks 6 and 10 were re-checked on the new `ChatPanel` layout. Two things did not
+pass as written: Stop doesn't stop the agent (deferred), and the answer reaches the
+browser in one burst, not segment by segment (upstream of our code; see findings
+2026-11-26 and 2026-11-27). Next: the follow-ups under "Found in the live checks".
 **Branch:** feature/chat
 **Started:** 2026-09-01
 
@@ -104,7 +105,29 @@ chat.
 
 ## Open questions
 
-None.
+- **Who holds the answer back: Vertex, or the google-genai SDK / Spring AI?** The
+  chunks reach `streamRound` bunched (finding 2026-11-27). Needs a direct
+  `streamGenerateContent` call. Goes with the model-change work.
+
+## Found in the live checks (2026-11-26/27)
+
+Later merges changed chat code after the 2026-10-01 browser check: reliability
+hardening (2026-10-27) added ADR-0014's tests, which now cover part of the failure
+path, and failure-boundaries brick 15 changed the stop path. Follow-ups, none blocking:
+
+- **Stop.** Deferred; to be built so it really stops the agent (finding 2026-11-26).
+- **Identical `recall_conversation` calls aren't caught.** "Nothing new" lives in
+  `LibraryTools` only. One run called `recall_conversation(page=0)` five times with
+  the same result and spent the whole round cap on it; another, three times.
+- **`answerAtCap` skips `warnOnDropped`.** A dropped cite at the cap isn't logged.
+- **The model puts the wrong thing in `cites`:** a fileId (twice, both when no chunk
+  was fetched in that request) and a start time (`"180.0"`, once). `sanitizeCites`
+  drops them, so nothing wrong is shown, but the segment ends up uncited.
+- **One empty answer** (about 1 in 25 runs): three tool rounds, then no segments, so
+  nothing saved. The raw text wasn't logged then; not seen again.
+- **Model behaviour on `gemini-2.5-flash`:** near-duplicate searches, recall called
+  when the turn is visible, "?" answered with a generic "I can help you…". Input for a
+  measured model comparison, not a reason to switch on one run.
 
 ## Slices
 
@@ -182,7 +205,9 @@ marks attached vs discovered.
 
 **DoD:**
 - [x] In the browser, step events render live, the answer streams, and citations
-      click through to timestamps. Browser check confirmed 2026-10-01.
+      click through to timestamps. Browser check confirmed 2026-10-01. Re-checked
+      2026-11-27 on the new layout: step events and citations pass; the answer
+      arrives in one burst (finding 2026-11-27).
 
 ### Slice 2 — multi-turn (persistence and memory)
 
@@ -202,7 +227,7 @@ V10 (`conversation`, `conversation_message`) in `cortex-ingestion`; `Conversatio
 **DoD:**
 - [x] Services boot against it with `ddl-auto=validate`.
 
-#### 8. Write path, replay, endpoints, gateway route — 🚧 BUILT 2026-09-22, NOT VERIFIED
+#### 8. Write path, replay, endpoints, gateway route — ✅ DONE 2026-11-27
 
 `ConversationService.ask`, `ConversationHistory` replay, the five
 `/conversations` endpoints, gateway route to `RAG_HOST:8083`. Reshaped in testing
@@ -213,37 +238,49 @@ labels reduced.
 **DoD:**
 - [x] A follow-up resolves against the prior turn. 2026-09-24: "wdym?" and "so does
       dony do anything?" answered from history with no tool calls.
-- [ ] Another user's conversation id → 404 on every endpoint.
-- [ ] Stop mid-answer → no answer row in `conversation_message`.
-- [ ] A long answer doesn't truncate silently, checked through
-      `POST /conversations/{id}/messages`.
-- [ ] A question after an unanswered one sees the "No answer was given" marker in
-      replay, seen in a live run.
-- [ ] The attachment block's closing line ("End of attached files…") seen in a
-      live run.
+- [x] Another user's conversation id → 404 on every endpoint. 2026-11-27: GET,
+      POST …/messages and DELETE all 404 with a second account's session; the chat
+      kept all 32 rows, and the second account's list was empty.
+- [x] An unfinished run → no answer row in `conversation_message`. 2026-11-26: checked
+      by killing rag-orchestration during the tool round, not with Stop, which doesn't
+      stop the agent (finding 2026-11-26).
+- [x] A long answer doesn't truncate silently, checked through
+      `POST /conversations/{id}/messages`. 2026-11-27: 23,226 chars, `finishReason`
+      STOP, 28 segments saved, the last one a whole sentence.
+- [x] A question after an unanswered one sees the "No answer was given" marker in
+      replay, seen in a live run (2026-11-26).
+- [x] The attachment block's closing line ("End of attached files…") seen in a
+      live run (2026-11-26).
 
-#### 9. Recall tool — 🚧 BUILT 2026-09-22, NOT VERIFIED
+#### 9. Recall tool — ✅ DONE 2026-11-27
 
 `recall_conversation(page)`: 20 rows a page from just past the replay window,
 rendered as text with no citable chunk ids. Gained `Attached:` and `Tools used:`
 lines 2026-09-24.
 
 **DoD:**
-- [ ] In a chat longer than the replay window, a reference to an early turn makes
+- [x] In a chat longer than the replay window, a reference to an early turn makes
       the model call `recall_conversation` and answer correctly, citing a chunk
-      fetched in this request. Never yet observed being called.
+      fetched in this request. 2026-11-27: "In my first question you summarized a
+      video. Where in that video is each pattern introduced?" → one recall, then a
+      search and `read_file`, three segments each citing a chunk from that request.
+      Recall was called in four other runs too; see "Found in the live checks" for
+      the repeated-call problem.
 
-#### Loop hardening (unnumbered; came out of testing) — 🚧 BUILT 2026-09-24, NOT VERIFIED
+#### Loop hardening (unnumbered; came out of testing) — ✅ DONE 2026-11-27
 
 `AgentService.answerAtCap`: at the round cap, one more call with no tools. "Nothing
 new": a tool whose results were all already seen this request returns one sentence
 instead of the chunks.
 
 **DoD:**
-- [ ] A question that hits the cap gets an answer from the final no-tools call, and
-      that answer is saved. Open point inside it: whether Gemini accepts function
-      calls in the history when none are declared.
-- [ ] "Nothing new" fires in a live run on a repeated search or a re-read file.
+- [x] A question that hits the cap gets an answer from the final no-tools call, and
+      that answer is saved. 2026-11-26, at the real cap of 5: "hit the 5-iteration
+      cap" → "answered at the cap" → row saved. The open point is answered: yes,
+      Gemini accepts function calls in the history when none are declared (that
+      history held five).
+- [x] "Nothing new" fires in a live run on a repeated search or a re-read file.
+      Seen 2026-11-26/27 on both, several times.
 
 #### 10. Frontend — ✅ DONE 2026-09-25
 
@@ -260,7 +297,10 @@ reloads as an empty bubble.
       nothing until the first send.
 - [x] After stopping mid-answer, reload shows "No answer was saved".
 
-Browser check confirmed 2026-10-01.
+Browser check confirmed 2026-10-01. Re-checked 2026-11-27 on the new `ChatPanel`
+layout: sidebar, reopen, delete (rows gone, none orphaned), reload with working
+citations, and a fresh `/chat` creating nothing. "No answer was saved" was re-checked
+on a killed run (2026-11-26), since Stop no longer ends one.
 
 #### 11. Docs — ✅ DONE 2026-09-25
 
@@ -288,4 +328,5 @@ hardening-pass points.
    called and the answer cites a chunk fetched in that request.
 7. Ask a question that hits the round cap: an answer still arrives and is saved.
 8. Request another user's conversation id on every endpoint: 404 each time.
-9. Stop an answer mid-stream and reload: "No answer was saved".
+9. Stop an answer mid-stream and reload: "No answer was saved". (Stop is deferred;
+   checked 2026-11-26 on a killed run instead.)

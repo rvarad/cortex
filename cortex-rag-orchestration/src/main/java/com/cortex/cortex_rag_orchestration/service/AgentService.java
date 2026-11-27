@@ -358,14 +358,13 @@ public class AgentService {
    * layer can sit in
    * between and persist segments while they stream.
    *
-   * @return true when the model produced its answer, false when the loop was
-   *         stopped by its iteration cap — the same fact as
-   *         {@code AgentAnswerDTO.hitIterationCap} on the blocking path,
-   *         inverted.
+   * @return true when the model produced its answer, including one forced at the
+   *         iteration cap by {@link #answerAtCap}; false only when, at the cap,
+   *         the model still asked for a tool with none declared.
    *         Either way the callback has already received everything that was
    *         sent.
-   *         The caller needs this because a capped run returns normally, and
-   *         whatever streamed before the cap is a half answer, not a finished
+   *         The caller needs this because that run returns normally, and
+   *         whatever streamed before it gave up is a half answer, not a finished
    *         one.
    */
   public boolean answerStream(List<Message> conversation, String userId, List<UUID> fileIds,
