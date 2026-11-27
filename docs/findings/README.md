@@ -212,3 +212,58 @@ writing JVM has.
 
 **The general lesson.** A `timestamp without time zone` column holds the writer's
 wall-clock time. Compare it with the writer's clock, not with the database's.
+
+## 2026-11-26 — Stop in the browser doesn't stop the agent; the answer is still saved
+
+**Area:** spring
+**Cost:** The 2026-10-01 browser check of Stop no longer holds: a stopped answer is
+saved as if it had finished.
+
+**What was seen.** A question stopped mid-answer in the browser at 21:21 has a saved
+ASSISTANT row 14 s later.
+
+**What was actually happening.** Stop aborts the browser's `fetch`. The server learns
+of it only when `SseEvents.send` throws, and that throw is what unwinds the agent.
+Nothing is sent during a tool round or while the model thinks, and a write into a
+socket the client has just closed usually succeeds (the OS accepts the bytes; the
+reset comes later). So the run finishes and `ConversationService.ask` saves it. The
+socket part is the likely mechanism, not instrumented.
+
+**How it was found.** The user's report, then the `conversation_message` rows for the
+stopped question.
+
+**What changed.** Nothing in code; Stop is deferred and will be built properly. The
+"nothing is saved for an unfinished run" rule was checked instead by killing
+rag-orchestration during the tool round: the question row stays, no answer row, and
+reload shows "No answer was saved".
+
+## 2026-11-27 — A chat answer reaches `streamRound` in one burst, after a long silence
+
+**Area:** gemini
+**Cost:** The browser shows the whole answer at once, after up to a minute with only a
+step label. Looked like a frontend or gateway buffer; it is neither.
+
+**What was seen.** In the browser, the answer appeared in one block, not segment by
+segment. `curl -N` through the gateway (`:8080`), timestamped per receive with
+`--trace-time`: the `step` event arrived at once, then 4.3 s of nothing, then every
+`source` and `segment` within 5 ms, then `done`.
+
+**What was actually happening.** The chunks of the answer round reach `streamRound`
+already bunched. A 3190-char answer: no chunk for 7775 ms after the call, then all 15
+within 32 ms, 4–6 of them in the same millisecond. A 23,226-char answer: 43.4 s of
+nothing, then 96 chunks within about 95 ms. That much text can't be generated in that
+time, so it was held before `chatModel.stream(...)` handed it over: by Gemini/Vertex,
+or by the google-genai SDK or Spring AI. Which one is not known. Everything after
+`streamRound` passes each chunk on in the millisecond it arrives.
+
+**How it was found.** `curl -N --trace-time` through the gateway for the wire timing;
+then a temporary log in `streamRound` of each chunk's arrival, in ms since the call.
+
+**Wrong theories.** The new `ChatPanel` layout, Next's dev server, the gateway. The
+step event crossing at once rules out the path; `curl` outside the browser rules out
+the frontend.
+
+**What changed.** Nothing. Brick 4's September `curl` check already showed segments
+arriving together at the end. Separating Vertex from the SDK needs a direct
+`streamGenerateContent` call (the chat model authenticates with the GCP service
+account, not an API key). Left to the model-change work, which touches the same call.

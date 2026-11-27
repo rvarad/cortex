@@ -146,9 +146,10 @@ public class ConversationService {
    *
    * <p>If the agent does not finish, or finishes with nothing to say, nothing is saved for the
    * answer: not on a crash, not when the client goes away (the failed {@code send} throws inside
-   * {@code onEvent}, which is what unwinds the agent), and not when the loop hits its iteration cap
-   * — that one returns normally, so it has to be checked for. The question row stays. Half answers
-   * are not kept.
+   * {@code onEvent}, which is what unwinds the agent), and not when, at the iteration cap, the
+   * model still asks for a tool with none declared — that one returns normally, so it has to be
+   * checked for. An answer forced at the cap is a real answer and is saved. The question row
+   * stays. Half answers are not kept.
    *
    * <p>An empty answer is not just untidy: replayed, it becomes a model turn with no parts, Gemini
    * rejects the whole request, and every later question in the conversation fails the same way.
@@ -188,7 +189,8 @@ public class ConversationService {
     });
 
     if (!finished) {
-      log.info("[conversation] {}: answer not saved — the agent hit its iteration cap", id);
+      log.info("[conversation] {}: answer not saved — at the cap the agent asked for a tool with none "
+          + "declared", id);
       return;
     }
 
