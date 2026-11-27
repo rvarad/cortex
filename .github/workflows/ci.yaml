@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - production-hardening
+      - development
   pull_request:
     branches:
       - master

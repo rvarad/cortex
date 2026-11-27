@@ -10,10 +10,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Upload, FileVideo, FileAudio, X, Loader2 } from "lucide-react";
-import { getPresignedUrl, uploadToGcs } from "@/lib/api";
+import { Upload, FileVideo, FileAudio, X } from "lucide-react";
 import { formatFileSize } from "@/lib/helpers";
 import { toast } from "sonner";
+import { useUploads } from "./uploads-provider";
 
 // These mirror the server-side guardrails (ALLOWED_CONTENT_TYPES,
 // cortex.media.max-file-size-bytes, cortex.media.max-duration-seconds).
@@ -54,19 +54,11 @@ function formatMinutes(seconds: number): string {
   return minutes > 0 ? `${minutes} min ${remainder}s` : `${remainder}s`;
 }
 
-interface FileUploadDialogProps {
-  onUploadComplete: () => void;
-  onFileUploaded?: (fileId: string) => void;
-}
-
-export function FileUploadDialog({
-  onUploadComplete,
-  onFileUploaded,
-}: FileUploadDialogProps) {
+export function FileUploadDialog() {
   const [open, setOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const uploads = useUploads();
 
   const handleFile = async (file: File) => {
     if (!ACCEPTED_TYPES.includes(file.type)) {
@@ -99,36 +91,14 @@ export function FileUploadDialog({
     if (file) handleFile(file);
   }, []);
 
-  const handleUpload = async () => {
+  // The provider runs the upload and shows its progress, so the dialog can
+  // close at once instead of making the user wait on it.
+  const handleUpload = () => {
     if (!selectedFile) return;
 
-    setIsUploading(true);
-    try {
-      // Step 1: Get presigned URL from Gateway
-      const { uploadUrl, fileId } = await getPresignedUrl({
-        filename: selectedFile.name,
-        contentType: selectedFile.type,
-        fileSize: selectedFile.size,
-      });
-
-      // Step 2: Upload directly to GCS
-      await uploadToGcs(uploadUrl, selectedFile);
-
-      if (onFileUploaded) {
-        onFileUploaded(fileId);
-      }
-
-      toast.success("File uploaded successfully! Processing will begin shortly.");
-      setOpen(false);
-      setSelectedFile(null);
-      onUploadComplete();
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Upload failed. Please try again."
-      );
-    } finally {
-      setIsUploading(false);
-    }
+    uploads.start(selectedFile);
+    setOpen(false);
+    setSelectedFile(null);
   };
 
   return (
@@ -216,7 +186,6 @@ export function FileUploadDialog({
                 variant="ghost"
                 size="icon"
                 onClick={() => setSelectedFile(null)}
-                disabled={isUploading}
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -225,20 +194,10 @@ export function FileUploadDialog({
             <Button
               className="w-full gap-2"
               onClick={handleUpload}
-              disabled={isUploading}
               id="confirm-upload-button"
             >
-              {isUploading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                <>
-                  <Upload className="h-4 w-4" />
-                  Upload
-                </>
-              )}
+              <Upload className="h-4 w-4" />
+              Upload
             </Button>
           </div>
         )}

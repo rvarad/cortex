@@ -1,6 +1,8 @@
 package com.cortex.cortex_media_processing_service.service;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -33,47 +35,37 @@ public class GcsStorageService {
   private String bucketName;
 
   public String getPresignedUrl(String objectName) {
-    try {
-      log.info("[GCSService] Generating GET presigned URL for: {}", objectName);
+    log.info("[GCSService] Generating GET presigned URL for: {}", objectName);
 
-      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName)).build();
+    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName)).build();
 
-      URL url = storage.signUrl(blobInfo, 30, TimeUnit.MINUTES, Storage.SignUrlOption.httpMethod(HttpMethod.GET),
-          Storage.SignUrlOption.withV4Signature());
+    URL url = storage.signUrl(blobInfo, 30, TimeUnit.MINUTES, Storage.SignUrlOption.httpMethod(HttpMethod.GET),
+        Storage.SignUrlOption.withV4Signature());
 
-      return url.toString();
-    } catch (Exception e) {
-      log.error("[GCSService] Error generating presigned URL for: {}", objectName, e);
-      throw new RuntimeException("Error generating presigned URL", e);
-    }
+    return url.toString();
   }
 
   /**
    * Generic streaming upload of a local file to an arbitrary GCS object path.
    * The caller owns the destination path + contentType; this only moves bytes.
    */
-  public String uploadFile(String destinationObjectName, Path localFile, String contentType) {
-    try {
-      log.info("[GCSService] Uploading file to: {}", destinationObjectName);
+  public String uploadFile(String destinationObjectName, Path localFile, String contentType) throws IOException {
+    log.info("[GCSService] Uploading file to: {}", destinationObjectName);
 
-      BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, destinationObjectName))
-          .setContentType(contentType)
-          .build();
+    BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, destinationObjectName))
+        .setContentType(contentType)
+        .build();
 
-      try (InputStream inputStream = Files.newInputStream(localFile);
-          WriteChannel writer = storage.writer(blobInfo)) {
-        byte[] buffer = new byte[64 * 1024];
+    try (InputStream inputStream = Files.newInputStream(localFile);
+        WriteChannel writer = storage.writer(blobInfo)) {
+      byte[] buffer = new byte[64 * 1024];
 
-        int limit;
-        while ((limit = inputStream.read(buffer)) >= 0) {
-          writer.write(ByteBuffer.wrap(buffer, 0, limit));
-        }
+      int limit;
+      while ((limit = inputStream.read(buffer)) >= 0) {
+        writer.write(ByteBuffer.wrap(buffer, 0, limit));
       }
-      return destinationObjectName;
-    } catch (Exception e) {
-      log.info("[GCS Storage Service] Failed to upload file to {}", destinationObjectName);
-      throw new RuntimeException("[GCS Storage Service] Failed to upload file to " + destinationObjectName, e);
     }
+    return destinationObjectName;
   }
 
   public String uploadChunk(String objectName, Path chunkToUpload) throws Exception {
@@ -113,9 +105,9 @@ public class GcsStorageService {
       bucket.get(head);
 
       return head;
-    } catch (Exception e) {
-      log.error("[GCSService] readHead failed for {}", objectName, e);
-      throw new RuntimeException("readHead failed for " + objectName, e);
+    } catch (IOException e) {
+      // Re-thrown unchecked, not logged: the caller reads this inside a BooleanSupplier.
+      throw new UncheckedIOException("readHead failed for " + objectName, e);
     }
   }
 }

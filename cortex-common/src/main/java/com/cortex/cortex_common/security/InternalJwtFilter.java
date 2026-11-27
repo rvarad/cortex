@@ -48,7 +48,7 @@ public class InternalJwtFilter extends OncePerRequestFilter {
       UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(userId, null,
           List.<GrantedAuthority>of());
       SecurityContextHolder.getContext().setAuthentication(auth);
-    } catch (JwtException | IllegalArgumentException e) {
+    } catch (JwtException | IllegalArgumentException e) { // A bad token is the caller's: the answer is a 401.
       response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
       response.getWriter().write("{\"error\": \"Invalid or expired token\"}");
       return;

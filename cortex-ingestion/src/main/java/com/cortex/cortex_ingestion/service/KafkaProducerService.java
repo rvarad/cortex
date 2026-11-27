@@ -6,9 +6,12 @@ import org.springframework.stereotype.Service;
 
 import com.cortex.cortex_common.dto.FileIngestionEventDTO;
 import com.cortex.cortex_common.dto.PipelineEventDTO;
+import com.cortex.cortex_common.kafka.KafkaSends;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class KafkaProducerService {
@@ -27,11 +30,16 @@ public class KafkaProducerService {
   public void sendFileIngestedEvent(FileIngestionEventDTO event) {
     String topic = determineTopic(event.getContentType());
 
-    kafkaTemplate.send(topic, event.getFileId().toString(), event);
+    KafkaSends.await(kafkaTemplate.send(topic, event.getFileId().toString(), event));
   }
 
-  public void sendPipelineEvent(PipelineEventDTO event) {
-    kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(), event);
+  /** A glass box event: it only feeds the timeline, so a failed send is a WARN (ADR-0014, 2026-10-30). */
+  public void sendGlassBoxEvent(PipelineEventDTO event) {
+    try {
+      KafkaSends.await(kafkaTemplate.send(pipelineEventsTopic, event.getFileId().toString(), event));
+    } catch (RuntimeException e) { // Not rethrown: the timeline loses one event; the file's work must go on.
+      log.warn("Glass box event {} not sent", event.getEventType(), e);
+    }
   }
 
   private String determineTopic(String contentType) {

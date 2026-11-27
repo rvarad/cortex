@@ -102,6 +102,46 @@ export interface SourceRef {
   fileId: string;
   fileDisplayName: string;
   chunkIndex: number;
+  /** True when the chunk came from a file attached to the message, false when
+   *  the agent found it by searching the library. Where it came from, not what
+   *  the model claims — so provenance can be marked per citation. */
+  attached: boolean;
+}
+
+/** One row of the previous-chats sidebar. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A file attached to a stored message. fileDisplayName is null once the file
+ *  has been deleted — the history still records that something was attached. */
+export interface AttachedFile {
+  fileId: string;
+  fileDisplayName: string | null;
+}
+
+/**
+ * One message of a reloaded conversation. Which fields are set depends on role:
+ * USER carries text + attachments, ASSISTANT carries segments + sources exactly
+ * as they streamed, so stored cites resolve without renumbering.
+ */
+export interface ConversationMessage {
+  id: string;
+  role: "USER" | "ASSISTANT";
+  createdAt: string;
+  text: string | null;
+  attachments: AttachedFile[] | null;
+  segments: AnswerSegment[] | null;
+  sources: SourceRef[] | null;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  messages: ConversationMessage[];
 }
 
 /**

@@ -1,6 +1,8 @@
 import { PIPELINE_EVENT_TYPES } from "@/lib/types";
 import type {
   AnswerSegment,
+  ConversationDetail,
+  ConversationSummary,
   FileItem,
   PipelineStreamEvent,
   PlaybackUrlResponse,
@@ -21,6 +23,20 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * A sentence to show the user. Ingestion answers errors with an RFC 9457
+ * problem body: `detail` says what went wrong, `title` is the status's name.
+ * Any other body is passed on as it is.
+ */
+async function errorMessage(res: Response): Promise<string> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/problem+json")) {
+    const problem = await res.json().catch(() => null);
+    return problem?.detail || problem?.title || res.statusText || "Request failed";
+  }
+  return res.text().catch(() => "Unknown error");
 }
 
 async function request<T>(
@@ -44,8 +60,7 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "Unknown error");
-    throw new ApiError(res.status, text);
+    throw new ApiError(res.status, await errorMessage(res));
   }
 
   // Handle 204 No Content
@@ -114,22 +129,39 @@ export async function getPresignedUrl(body: {
   });
 }
 
-export async function uploadToGcs(
+/**
+ * Direct upload to GCS — no credentials, no JSON content-type. XHR rather than
+ * fetch, because fetch reports nothing while it sends a body. Rejects with an
+ * AbortError when `signal` fires.
+ */
+export function uploadToGcs(
   uploadUrl: string,
-  file: File
+  file: File,
+  onProgress: (sentBytes: number) => void,
+  signal: AbortSignal
 ): Promise<void> {
-  // Direct upload to GCS — no credentials, no JSON content-type
-  const res = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": file.type,
-    },
-    body: file,
-  });
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Upload cancelled", "AbortError"));
+      return;
+    }
 
-  if (!res.ok) {
-    throw new Error(`GCS upload failed: ${res.status}`);
-  }
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", file.type);
+
+    xhr.upload.onprogress = (event) => onProgress(event.loaded);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`GCS upload failed: ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onabort = () =>
+      reject(new DOMException("Upload cancelled", "AbortError"));
+
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
 }
 
 export async function updateFileName(fileId: string, displayName: string) {
@@ -184,19 +216,53 @@ export function subscribeToPipelineEvents(
   return eventSource;
 }
 
+// ============ Conversations ============
+
+/** Creates an empty conversation. Called on first send, not on page open. */
+export async function createConversation() {
+  return request<ConversationSummary>("/conversations", { method: "POST" });
+}
+
+/** The sidebar, newest activity first (the server orders it). */
+export async function listConversations() {
+  return request<ConversationSummary[]>("/conversations");
+}
+
+/**
+ * One conversation for reload. Returns only the most recent messages — the
+ * server caps it and exposes no offset, so there is no "load earlier" yet.
+ *
+ * Throws ApiError 404 for an id that is missing or belongs to someone else;
+ * the backend deliberately does not distinguish the two.
+ */
+export async function getConversation(id: string) {
+  return request<ConversationDetail>(`/conversations/${id}`);
+}
+
+/** Hard delete; the messages cascade server-side. No undo. */
+export async function deleteConversation(id: string) {
+  return request<void>(`/conversations/${id}`, { method: "DELETE" });
+}
+
 // ============ Chat ============
 
 export interface ChatStreamHandlers {
-  onSegment: (segment: AnswerSegment) => void;
+  /** Something the agent is doing, in words — "Searching library…". */
+  onStep: (label: string) => void;
   onSource: (source: SourceRef) => void;
+  onSegment: (segment: AnswerSegment) => void;
 }
 
 /**
  * Parses one SSE frame — the text between two blank lines — and routes it.
- * Unknown event names are ignored rather than thrown on, so a new backend
- * event type can't break an older client.
+ * Returns true when the frame was the terminal `done` event. Unknown event
+ * names are ignored rather than thrown on, so a new backend event type can't
+ * break an older client.
  */
-function dispatchChatFrame(frame: string, handlers: ChatStreamHandlers) {
+function dispatchChatFrame(
+  frame: string,
+  handlers: ChatStreamHandlers
+): boolean {
   let eventName = "message";
   const dataLines: string[] = [];
 
@@ -212,43 +278,61 @@ function dispatchChatFrame(frame: string, handlers: ChatStreamHandlers) {
     else if (field === "data") dataLines.push(value);
   }
 
-  if (dataLines.length === 0) return;
+  if (eventName === "done") return true;
+  if (dataLines.length === 0) return false;
 
   let payload: unknown;
   try {
     payload = JSON.parse(dataLines.join("\n"));
   } catch {
-    return;
+    return false;
   }
 
-  if (eventName === "segment") {
-    const segment = payload as AnswerSegment;
-    handlers.onSegment({
-      text: segment.text ?? "",
-      cites: Array.isArray(segment.cites) ? segment.cites : [],
-    });
-  } else if (eventName === "source") {
-    handlers.onSource(payload as SourceRef);
+  switch (eventName) {
+    case "step": {
+      const step = payload as { label?: unknown };
+      if (typeof step.label === "string") handlers.onStep(step.label);
+      break;
+    }
+    case "source":
+      handlers.onSource(payload as SourceRef);
+      break;
+    case "segment": {
+      const segment = payload as AnswerSegment;
+      handlers.onSegment({
+        text: segment.text ?? "",
+        cites: Array.isArray(segment.cites) ? segment.cites : [],
+      });
+      break;
+    }
   }
+
+  return false;
 }
 
 /**
- * Streams a grounded answer.
+ * Streams an agentic answer: `step` events as the agent searches and reads,
+ * then `source`/`segment` pairs as it writes, then `done`.
  *
  * This endpoint is a POST and EventSource can only issue GET requests, so
  * `subscribeToPipelineEvents` cannot be reused here. Frames are read off a
  * ReadableStream and parsed by hand, buffering across chunk boundaries because
  * a single read can split one frame or carry several.
  *
- * Resolves when the server closes the stream; rejects on a non-2xx response or
- * an aborted signal.
+ * Resolves to true when the server sent `done`, false when the stream closed
+ * without it — which is how a cut-off answer (emitter timeout, crash mid-run)
+ * is told apart from a finished one. Rejects on a non-2xx response or an
+ * aborted signal.
  */
-export async function streamChat(
-  body: { question: string; fileId?: string },
+export async function streamConversationMessage(
+  conversationId: string,
+  body: { question: string; fileIds: string[] },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal
-): Promise<void> {
-  const response = await fetch(`${API_URL}/chats/stream`, {
+): Promise<boolean> {
+  const response = await fetch(
+    `${API_URL}/conversations/${conversationId}/messages`,
+    {
     method: "POST",
     credentials: "include",
     headers: {
@@ -260,8 +344,7 @@ export async function streamChat(
   });
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new ApiError(response.status, text || response.statusText);
+    throw new ApiError(response.status, await errorMessage(response));
   }
 
   if (!response.body) {
@@ -270,6 +353,7 @@ export async function streamChat(
 
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
+  let completed = false;
 
   try {
     for (;;) {
@@ -280,7 +364,9 @@ export async function streamChat(
 
       let boundary = buffer.indexOf("\n\n");
       while (boundary !== -1) {
-        dispatchChatFrame(buffer.slice(0, boundary), handlers);
+        if (dispatchChatFrame(buffer.slice(0, boundary), handlers)) {
+          completed = true;
+        }
         buffer = buffer.slice(boundary + 2);
         boundary = buffer.indexOf("\n\n");
       }
@@ -288,12 +374,14 @@ export async function streamChat(
 
     // A well-behaved server ends on a blank line, but don't lose a final frame
     // if the connection closes without one.
-    if (buffer.trim().length > 0) {
-      dispatchChatFrame(buffer, handlers);
+    if (buffer.trim().length > 0 && dispatchChatFrame(buffer, handlers)) {
+      completed = true;
     }
   } finally {
     reader.releaseLock();
   }
+
+  return completed;
 }
 
 // ============ Search ============

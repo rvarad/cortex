@@ -1,17 +1,13 @@
 package com.cortex.cortex_media_processing_service.config;
 
-import java.util.Map;
+import java.util.concurrent.RejectedExecutionException;
 
-import org.slf4j.MDC;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
 @Configuration
-public class MediaProcessingCofig {
+public class MediaProcessingConfig {
 
   @Bean(name = "mediaProcessingExecutor")
   public ThreadPoolTaskExecutor mediaProcessingExecutor() {
@@ -24,24 +20,14 @@ public class MediaProcessingCofig {
       try {
         exec.getQueue().put(runnable);
       } catch (InterruptedException e) {
-        log.error("InterruptedException in mediaProcessingExecutor", e);
         Thread.currentThread().interrupt();
+        // Thrown, not logged: it fails the listener, so the Kafka handler reports the record, with
+        // its fileId. Returning would drop the job without a trace.
+        throw new RejectedExecutionException("Interrupted while waiting to queue a media job", e);
       }
     });
-    executor.setTaskDecorator(runnable -> {
-      Map<String, String> ctx = MDC.getCopyOfContextMap();
-      return () -> {
-        if (ctx != null)
-          MDC.setContextMap(ctx);
-        else
-          MDC.clear();
-        try {
-          runnable.run();
-        } finally {
-          MDC.clear();
-        }
-      };
-    });
+    // No task decorator: MDC is carried by BackgroundTask, which every task submitted here is
+    // wrapped in at the call site (MediaEventConsumer).
     executor.initialize();
     executor.getThreadPoolExecutor().prestartAllCoreThreads();
     return executor;

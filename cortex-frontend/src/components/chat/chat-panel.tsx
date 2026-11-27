@@ -1,34 +1,82 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ApiError, getFiles, streamChat } from "@/lib/api";
-import type { AnswerSegment, SourceRef } from "@/lib/types";
+import {
+  ApiError,
+  createConversation,
+  getConversation,
+  getFiles,
+  streamConversationMessage,
+} from "@/lib/api";
+import type {
+  AnswerSegment,
+  ConversationMessage as StoredMessage,
+  FileItem,
+  SourceRef,
+} from "@/lib/types";
+import { useConversations } from "./conversations-provider";
 import { formatDuration } from "@/lib/helpers";
 import { useMediaPlayer } from "@/components/media/media-player-provider";
+import { AttachmentPicker } from "./attachment-picker";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft,
+  ArrowDown,
+  Check,
+  ChevronDown,
+  FileAudio,
   FileVideo,
   Loader2,
   MessageSquare,
   Paperclip,
+  Play,
+  Plus,
   Send,
   Square,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import Link from "next/link";
+
+const MAX_ATTACHMENTS = 3;
+// Within this distance of the bottom, the list counts as "at the bottom" and
+// follows a streaming answer.
+const FOLLOW_SLACK_PX = 40;
+
+interface Attachment {
+  fileId: string;
+  fileDisplayName: string;
+}
 
 interface UserMessage {
   role: "user";
   text: string;
+  /** A stored question whose answer was never saved — the run was stopped or
+   *  crashed. Live, the stop notice is on the assistant bubble; on reload
+   *  there is no assistant row at all, so the question carries it. */
+  unanswered?: boolean;
+  /** What was attached to this question. Attachments clear after each send,
+   *  so the history has to carry them or the provenance below means nothing. */
+  attachments: Attachment[];
+}
+
+interface AgentStep {
+  label: string;
+  /** A step that arrived after the answer had started — today that's only the
+   *  agent giving up at its iteration cap. Rendered as a notice under the
+   *  answer, not in the thinking timeline above it. */
+  afterAnswer: boolean;
 }
 
 interface AssistantMessage {
   role: "assistant";
+  steps: AgentStep[];
   segments: AnswerSegment[];
   /** Every source the answer cited, in arrival order, keyed by sourceNo. */
   sources: SourceRef[];
+  /** Which files were attached to the question — what "discovered" is
+   *  measured against when marking provenance. */
+  attachedFileIds: string[];
   status: "streaming" | "done" | "error";
   error?: string;
 }
@@ -59,38 +107,96 @@ function updateLastAssistant(
 }
 
 interface ChatPanelProps {
-  /** Attaches this file as the conversation's context. Omitted means the whole
-   *  library — the backend already treats a null fileId as library-wide. */
+  /** Pre-attaches this file to the first question. It's an ordinary chip from
+   *  there — removable, and cleared on send like any other. */
   fileId?: string;
+  /** Loads and continues a stored conversation. Absent on a fresh chat, where
+   *  one is created on the first send. */
+  conversationId?: string;
 }
 
-export function ChatPanel({ fileId }: ChatPanelProps) {
-  const { open } = useMediaPlayer();
+/** Stored rows → the shape the bubbles already render. */
+function toMessages(stored: StoredMessage[]): Message[] {
+  return stored.map((row, index) => {
+    if (row.role === "ASSISTANT") {
+      return {
+        role: "assistant",
+        steps: [],
+        segments: row.segments ?? [],
+        sources: row.sources ?? [],
+        // Provenance is a fact about each source; the answer no longer needs
+        // to know which ids were attached to reproduce the marking.
+        attachedFileIds: (row.sources ?? [])
+          .filter((source) => source.attached)
+          .map((source) => source.fileId),
+        status: "done",
+      };
+    }
 
-  const [attachedName, setAttachedName] = useState<string | null>(null);
+    // §5.5: a half answer is never saved, so a question with nothing after it
+    // is one that was stopped or died mid-run.
+    const next = stored[index + 1];
+
+    return {
+      role: "user",
+      text: row.text ?? "",
+      unanswered: !next || next.role !== "ASSISTANT",
+      attachments: (row.attachments ?? []).map((file) => ({
+        fileId: file.fileId,
+        fileDisplayName: file.fileDisplayName ?? "Deleted file",
+      })),
+    };
+  });
+}
+
+export function ChatPanel({ fileId, conversationId }: ChatPanelProps) {
+  const { open } = useMediaPlayer();
+  const conversations = useConversations();
+
+  const [files, setFiles] = useState<FileItem[]>([]);
+  // Only a fresh chat needs state: it acquires an id on the first send. For a
+  // stored chat the prop is the id, so navigating between two conversations
+  // can never leave a stale one behind.
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const chatId = conversationId ?? createdId;
+  const [title, setTitle] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(Boolean(conversationId));
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attached, setAttached] = useState<Attachment[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  // False once the user scrolls up to read: the stream stops pulling them back
+  // down and the jump-to-bottom button shows. Scrolling to the bottom again,
+  // or sending, turns it back on.
+  const [atBottom, setAtBottom] = useState(true);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Resolve the attached file and hand it to the dock, loaded but not playing.
-  useEffect(() => {
-    if (!fileId) return;
+  const attachedIds = attached.map((a) => a.fileId);
+  const atLimit = attached.length >= MAX_ATTACHMENTS;
 
+  // The picker needs the library either way; the route's file, if any, is
+  // pre-attached and handed to the dock loaded but not playing.
+  useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       try {
-        const files = await getFiles();
+        const list = await getFiles();
         if (cancelled) return;
+        setFiles(list);
 
-        const match = files.find((file) => file.fileId === fileId);
+        const match = fileId
+          ? list.find((file) => file.fileId === fileId)
+          : undefined;
         if (!match) return;
 
-        setAttachedName(match.fileDisplayName);
+        setAttached([
+          { fileId: match.fileId, fileDisplayName: match.fileDisplayName },
+        ]);
         open({
           fileId: match.fileId,
           title: match.fileDisplayName,
@@ -98,7 +204,7 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
           autoPlay: false,
         });
       } catch {
-        // The chat still works without the player; leave the chip unresolved.
+        // The chat still works without the list; the picker is just empty.
       }
     })();
 
@@ -107,15 +213,81 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
     };
   }, [fileId, open]);
 
-  // Abandon an in-flight answer if the user navigates away.
+  // Tell the sidebar which row to highlight; clear it on a fresh chat.
+  // setActiveId comes from useState, so it is stable — depending on the whole
+  // context value would re-run this on every list refresh.
+  const setActiveId = conversations?.setActiveId;
+  useEffect(() => {
+    setActiveId?.(chatId);
+  }, [chatId, setActiveId]);
+
+  // Load a stored conversation. A reloaded answer must render exactly like a
+  // live one, citations included — that is the whole point of storing segments
+  // and sources as JSON rather than prose.
+  useEffect(() => {
+    if (!conversationId) return;
+
+    let cancelled = false;
+    setAtBottom(true);
+    setTitle(null);
+    setIsLoading(true);
+    setLoadError(null);
+
+    void (async () => {
+      try {
+        const conversation = await getConversation(conversationId);
+        if (cancelled) return;
+        setTitle(conversation.title);
+        setMessages(toMessages(conversation.messages));
+      } catch (error) {
+        if (cancelled) return;
+        setMessages([]);
+        setLoadError(
+          error instanceof ApiError && error.status === 404
+            ? "This chat no longer exists."
+            : "Couldn't load this chat."
+        );
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  // Abandon an in-flight answer if the user navigates away or switches chats.
   useEffect(() => {
     return () => abortRef.current?.abort();
-  }, []);
+  }, [conversationId]);
 
   useEffect(() => {
     const element = scrollRef.current;
+    if (element && atBottom) element.scrollTop = element.scrollHeight;
+  }, [messages, atBottom]);
+
+  // Instant, not smooth: a smooth scroll during a stream chases a bottom that
+  // keeps moving, and each scroll event on the way reads as "not at bottom".
+  function jumpToBottom() {
+    const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;
-  }, [messages]);
+  }
+
+  function attach(file: Pick<FileItem, "fileId" | "fileDisplayName">) {
+    setAttached((current) => {
+      if (current.length >= MAX_ATTACHMENTS) return current;
+      if (current.some((a) => a.fileId === file.fileId)) return current;
+      return [
+        ...current,
+        { fileId: file.fileId, fileDisplayName: file.fileDisplayName },
+      ];
+    });
+  }
+
+  function detach(id: string) {
+    setAttached((current) => current.filter((a) => a.fileId !== id));
+  }
 
   /** A citation jumps to the cited moment; a source opens that file's start. */
   function playSource(source: SourceRef, startAt: number) {
@@ -134,25 +306,59 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Snapshot what this question is scoped to, then clear the chips — the
+    // next question starts unscoped.
+    const scope = attached;
+    const fileIds = scope.map((a) => a.fileId);
+
     setInput("");
+    setAttached([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
+    setAtBottom(true);
     setMessages((previous) => [
       ...previous,
-      { role: "user", text: question },
-      { role: "assistant", segments: [], sources: [], status: "streaming" },
+      { role: "user", text: question, attachments: scope },
+      {
+        role: "assistant",
+        steps: [],
+        segments: [],
+        sources: [],
+        attachedFileIds: fileIds,
+        status: "streaming",
+      },
     ]);
     setIsStreaming(true);
 
     try {
-      await streamChat(
-        { question, fileId },
+      // A conversation is created on the first send, never on page open.
+      let id = chatId;
+      if (!id) {
+        id = (await createConversation()).id;
+        setCreatedId(id);
+        // The server titles a chat with its first question, so show that now
+        // rather than wait for the sidebar refresh after the answer.
+        setTitle(question);
+
+        // replaceState, not router.replace: /chat and /chat/[id] are different
+        // route segments, so a navigation would remount this component and
+        // drop the answer now streaming in. The URL is all that needs to move;
+        // a later hard reload lands on the real route.
+        window.history.replaceState(null, "", `/chat/${id}`);
+      }
+
+      const completed = await streamConversationMessage(
+        id,
+        { question, fileIds },
         {
-          onSegment: (segment) =>
+          onStep: (label) =>
             setMessages((previous) =>
               updateLastAssistant(previous, (message) => ({
                 ...message,
-                segments: [...message.segments, segment],
+                steps: [
+                  ...message.steps,
+                  { label, afterAnswer: message.segments.length > 0 },
+                ],
               }))
             ),
           onSource: (source) =>
@@ -163,14 +369,27 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
                   : { ...message, sources: [...message.sources, source] }
               )
             ),
+          onSegment: (segment) =>
+            setMessages((previous) =>
+              updateLastAssistant(previous, (message) => ({
+                ...message,
+                segments: [...message.segments, segment],
+              }))
+            ),
         },
         controller.signal
       );
 
+      // The server ends every finished run with `done`. A close without it is
+      // the emitter timing out or the agent crashing mid-run — the text that
+      // arrived is real, but it isn't the whole answer.
       setMessages((previous) =>
         updateLastAssistant(previous, (message) => ({
           ...message,
-          status: "done",
+          status: completed ? "done" : "error",
+          error: completed
+            ? undefined
+            : "The answer was cut off before it finished.",
         }))
       );
     } catch (error) {
@@ -185,6 +404,8 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
       );
     } finally {
       setIsStreaming(false);
+      // The title lands on the first message and updatedAt reorders the list.
+      conversations?.refresh();
     }
   }
 
@@ -195,142 +416,364 @@ export function ChatPanel({ fileId }: ChatPanelProps) {
     }
   }
 
+  // A stored chat shows nothing until its title loads, and nothing if the load
+  // fails; only a fresh chat is "New chat".
+  const heading = title ?? (chatId ? "" : "New chat");
+
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <Link
-          href={fileId ? "/dashboard" : "/dashboard"}
-          className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to files
-        </Link>
+    // min-h-0 lets this column shrink to the screen; without it the column
+    // grows with its content and the whole page scrolls, input and all.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* Floats over the list, which scrolls underneath it. z-20: above the
+          list's top fade (z-10), which comes later in the DOM. */}
+      {heading && (
+        <header className="absolute top-3 left-3 z-20 max-w-[25%] rounded-lg bg-card px-3 py-1.5">
+          <h1 className="truncate text-sm font-medium" title={heading}>
+            {heading}
+          </h1>
+        </header>
+      )}
 
-        {fileId && (
-          <span
-            className="flex min-w-0 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground"
-            title={attachedName ?? undefined}
-          >
-            <Paperclip className="h-3 w-3 shrink-0" />
-            <span className="truncate">{attachedName ?? "Attaching…"}</span>
-          </span>
-        )}
-      </div>
+      {/* Full height and full width, so the scrollbar sits at the edge and
+          the wheel works anywhere; the content inside is centered. */}
+      <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          setAtBottom(
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+              FOLLOW_SLACK_PX
+          );
+        }}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+      >
+        {/* Top fade: messages fade out as they scroll up under the chat
+            name. Inside the list so it never covers the scrollbar; -mb-12
+            cancels its height so it takes no room. */}
+        <div className="pointer-events-none sticky top-0 z-10 -mb-12 h-12 shrink-0 bg-linear-to-b from-background to-transparent" />
 
-      <div ref={scrollRef} className="flex-1 space-y-6 overflow-y-auto pb-4">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="mb-4 rounded-xl bg-primary/10 p-4">
-              <MessageSquare className="h-8 w-8 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold">
-              {fileId ? "Chat with this file" : "Chat with your library"}
-            </h2>
-            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              {fileId
-                ? "Ask anything about this file. Answers cite the moments they came from."
-                : "Ask across everything you've uploaded. Answers cite the files and moments they came from."}
-            </p>
+        {/* flex-1 makes this at least as tall as the scroll area, so the
+            input sits at the bottom even when the chat is short. */}
+        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4">
+          {/* pt-16 keeps the first message clear of the chat name; pb-16
+              keeps the last one clear of the bottom fade (h-12) with room to
+              spare. Change one fade height, change these too. */}
+          <div className="flex-1 space-y-6 pt-16 pb-16">
+            {isLoading && (
+              <div className="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading chat…
+              </div>
+            )}
+
+            {loadError && (
+              <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+                <TriangleAlert className="h-6 w-6 text-amber-500" />
+                <p className="text-sm text-muted-foreground">{loadError}</p>
+                <Link
+                  href="/chat"
+                  className="text-sm text-primary underline-offset-4 hover:underline"
+                >
+                  Start a new chat
+                </Link>
+              </div>
+            )}
+
+            {!isLoading && !loadError && messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="mb-4 rounded-xl bg-primary/10 p-4">
+                  <MessageSquare className="h-8 w-8 text-primary" />
+                </div>
+                <h2 className="text-lg font-semibold">Chat with your library</h2>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Attach up to {MAX_ATTACHMENTS} files to focus a question, or ask
+                  across everything. Answers cite the moments they came from.
+                </p>
+              </div>
+            )}
+
+            {messages.map((message, index) =>
+              message.role === "user" ? (
+                <UserBubble key={index} message={message} />
+              ) : (
+                <AssistantBubble
+                  key={index}
+                  message={message}
+                  files={files}
+                  attachedIds={attachedIds}
+                  atLimit={atLimit}
+                  onCite={(source) => playSource(source, source.startTime)}
+                  onPlay={(source) => playSource(source, 0)}
+                  onAttach={attach}
+                />
+              )
+            )}
           </div>
-        )}
 
-        {messages.map((message, index) =>
-          message.role === "user" ? (
-            <div key={index} className="flex justify-end">
-              <p className="max-w-[85%] rounded-2xl bg-muted px-4 py-2 text-sm whitespace-pre-wrap">
-                {message.text}
-              </p>
+          {/* Sticky inside the list, not outside it: the list keeps the full
+              height and scrolls under the input, yet the last message still
+              ends above the input rather than hidden behind it. */}
+          <div className="sticky bottom-0 bg-background pb-4">
+            {/* Bottom fade: messages fade out as they scroll down into the
+                input. */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-full h-12 bg-linear-to-t from-background to-transparent" />
+            {!atBottom && (
+              <Button
+                variant="outline"
+                size="icon-lg"
+                onClick={jumpToBottom}
+                aria-label="Jump to the bottom"
+                title="Jump to the bottom"
+                className="absolute right-0 bottom-full mb-3 rounded-full bg-card shadow-md"
+              >
+                <ArrowDown />
+              </Button>
+            )}
+            <div className="rounded-2xl bg-card p-3">
+              {attached.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {attached.map((item) => (
+                    <span
+                      key={item.fileId}
+                      className="flex max-w-60 items-center gap-1.5 rounded-lg border border-border bg-muted/40 py-1 pr-1 pl-2 text-xs"
+                      title={item.fileDisplayName}
+                    >
+                      <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{item.fileDisplayName}</span>
+                      <button
+                        type="button"
+                        onClick={() => detach(item.fileId)}
+                        aria-label={`Remove ${item.fileDisplayName}`}
+                        className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {attached.length}/{MAX_ATTACHMENTS}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex items-end gap-2">
+                <AttachmentPicker
+                  files={files}
+                  attachedIds={attachedIds}
+                  limit={MAX_ATTACHMENTS}
+                  onAttach={attach}
+                />
+
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  value={input}
+                  onChange={(event) => {
+                    setInput(event.target.value);
+                    const element = event.target;
+                    element.style.height = "auto";
+                    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    attached.length > 0
+                      ? "Ask about the attached files…"
+                      : "Ask about your library…"
+                  }
+                  className="max-h-40 flex-1 resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                />
+
+                {isStreaming ? (
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={() => abortRef.current?.abort()}
+                    aria-label="Stop generating"
+                  >
+                    <Square className="fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="lg"
+                    onClick={() => void send()}
+                    disabled={input.trim().length === 0}
+                    aria-label="Send question"
+                  >
+                    <Send />
+                  </Button>
+                )}
+              </div>
             </div>
-          ) : (
-            <AssistantBubble
-              key={index}
-              message={message}
-              onCite={(source) => playSource(source, source.startTime)}
-              onOpenSource={(source) => playSource(source, 0)}
-            />
-          )
-        )}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      <div className="sticky bottom-0 flex items-end gap-2 border-t border-border/50 bg-background pt-3">
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          value={input}
-          onChange={(event) => {
-            setInput(event.target.value);
-            const element = event.target;
-            element.style.height = "auto";
-            element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            fileId ? "Ask about this file…" : "Ask about your library…"
-          }
-          className="max-h-40 flex-1 resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+function UserBubble({ message }: { message: UserMessage }) {
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      {message.attachments.length > 0 && (
+        <div className="flex max-w-[85%] flex-wrap justify-end gap-1">
+          {message.attachments.map((item) => (
+            <span
+              key={item.fileId}
+              className="flex max-w-48 items-center gap-1 rounded-md border border-border/60 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+              title={item.fileDisplayName}
+            >
+              <Paperclip className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{item.fileDisplayName}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="max-w-[85%] rounded-2xl bg-muted px-4 py-2 text-sm whitespace-pre-wrap">
+        {message.text}
+      </p>
+      {message.unanswered && (
+        <p className="text-xs text-muted-foreground">No answer was saved</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the agent did before it started writing, as one row rather than a stack.
+ *
+ * Only the step in progress is shown; the earlier ones sit behind a disclosure.
+ * The steps matter — they are what makes a multi-second wait legible, and they
+ * are the visible proof that broadening to the library was a deliberate second
+ * tool call rather than a silent one — but they should not outweigh the answer
+ * they sit above.
+ */
+function StepTimeline({
+  steps,
+  isThinking,
+}: {
+  steps: AgentStep[];
+  isThinking: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (steps.length === 0) return null;
+
+  const current = steps[steps.length - 1];
+  const previous = steps.slice(0, -1);
+  const canExpand = previous.length > 0;
+
+  const summary = isThinking
+    ? current.label
+    : `Worked for ${steps.length} step${steps.length === 1 ? "" : "s"}`;
+
+  const row = (
+    <>
+      {isThinking ? (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      ) : (
+        <Check className="h-3 w-3 shrink-0" />
+      )}
+      <span className="truncate">{summary}</span>
+      {canExpand && (
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 transition-transform",
+            expanded && "rotate-180"
+          )}
         />
+      )}
+    </>
+  );
 
-        {isStreaming ? (
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={() => abortRef.current?.abort()}
-            aria-label="Stop generating"
-          >
-            <Square className="fill-current" />
-          </Button>
-        ) : (
-          <Button
-            size="lg"
-            onClick={() => void send()}
-            disabled={input.trim().length === 0}
-            aria-label="Send question"
-          >
-            <Send />
-          </Button>
-        )}
-      </div>
+  return (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      {/* Nothing to reveal on a single-step run, so nothing to click either. */}
+      {canExpand ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-expanded={expanded}
+          className="flex max-w-full items-center gap-2 rounded transition-colors hover:text-foreground"
+        >
+          {row}
+        </button>
+      ) : (
+        <div className="flex max-w-full items-center gap-2">{row}</div>
+      )}
+
+      {expanded && (
+        <ol className="space-y-1 border-l border-border/60 pl-3 text-muted-foreground/70">
+          {previous.map((step, index) => (
+            <li key={index} className="flex items-center gap-2">
+              <Check className="h-3 w-3 shrink-0" />
+              <span>{step.label}</span>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }
 
 function AssistantBubble({
   message,
+  files,
+  attachedIds,
+  atLimit,
   onCite,
-  onOpenSource,
+  onPlay,
+  onAttach,
 }: {
   message: AssistantMessage;
+  files: FileItem[];
+  attachedIds: string[];
+  atLimit: boolean;
   onCite: (source: SourceRef) => void;
-  onOpenSource: (source: SourceRef) => void;
+  onPlay: (source: SourceRef) => void;
+  onAttach: (file: Pick<FileItem, "fileId" | "fileDisplayName">) => void;
 }) {
   const byNumber = new Map(message.sources.map((s) => [s.sourceNo, s]));
 
-  // The sources list is per FILE, not per citation: an answer citing six
-  // moments from one video lists that video once. First appearance wins, so the
-  // order matches the order the answer referenced them in.
-  const files = new Map<string, SourceRef>();
+  // Tiles are for what the agent found on its own. Attached files are already
+  // on screen as the question's chips, so listing them again says nothing.
+  // One tile per file: first appearance wins, so order follows the answer.
+  const discovered = new Map<string, SourceRef>();
   for (const source of message.sources) {
-    if (!files.has(source.fileId)) files.set(source.fileId, source);
+    if (!source.attached && !discovered.has(source.fileId)) {
+      discovered.set(source.fileId, source);
+    }
   }
 
-  const isEmpty =
-    message.segments.length === 0 && message.status === "streaming";
+  // "Not in your attached files" is only a warning relative to an attachment.
+  const hadAttachments = message.attachedFileIds.length > 0;
+  const broadenedToLibrary = hadAttachments && discovered.size > 0;
+
+  const timeline = message.steps.filter((step) => !step.afterAnswer);
+  const notices = message.steps.filter((step) => step.afterAnswer);
+
+  const isThinking =
+    message.status === "streaming" && message.segments.length === 0;
+  const isBlank = isThinking && timeline.length === 0;
 
   return (
     <div className="space-y-3">
+      <StepTimeline steps={timeline} isThinking={isThinking} />
+
       <div className="text-sm leading-relaxed">
-        {isEmpty ? (
+        {isBlank ? (
           <span className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Thinking…
           </span>
-        ) : (
+        ) : message.segments.length > 0 ? (
           <p className="whitespace-pre-wrap">
             {message.segments.map((segment, index) => (
               <span key={index}>
                 {segment.text}
                 {segment.cites.map((cite) => {
                   const source = byNumber.get(cite);
+                  const fromLibrary =
+                    hadAttachments && source !== undefined && !source.attached;
                   return (
                     <button
                       key={cite}
@@ -341,10 +784,15 @@ function AssistantBubble({
                         source
                           ? `${source.fileDisplayName} · ${formatDuration(
                               source.startTime
-                            )}`
+                            )}${fromLibrary ? " · from your library" : ""}`
                           : undefined
                       }
-                      className="mx-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded bg-primary/15 px-1 align-super text-[10px] font-medium text-primary transition-colors hover:bg-primary/30 disabled:opacity-40"
+                      className={cn(
+                        "mx-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded px-1 align-super text-[10px] font-medium transition-colors disabled:opacity-40",
+                        fromLibrary
+                          ? "bg-amber-500/15 text-amber-500 hover:bg-amber-500/30"
+                          : "bg-primary/15 text-primary hover:bg-primary/30"
+                      )}
                     >
                       {cite}
                     </button>
@@ -356,35 +804,94 @@ function AssistantBubble({
               <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
             )}
           </p>
-        )}
+        ) : null}
       </div>
 
-      {files.size > 0 && (
+      {/* The agent's own late notices — e.g. giving up at its iteration cap
+          after some of the answer had already streamed. */}
+      {notices.map((notice, index) => (
+        <p
+          key={index}
+          className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-500"
+        >
+          <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+          {notice.label}
+        </p>
+      ))}
+
+      {discovered.size > 0 && (
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">Sources</p>
-          <div className="flex flex-wrap gap-1.5">
-            {Array.from(files.values()).map((source) => (
-              <button
-                key={source.fileId}
-                type="button"
-                onClick={() => onOpenSource(source)}
-                title={`Play ${source.fileDisplayName} from the start`}
-                className="flex max-w-full items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1 text-xs transition-colors hover:border-primary/40 hover:bg-muted"
-              >
-                <FileVideo className="h-3 w-3 shrink-0 text-primary" />
-                <span className="truncate">{source.fileDisplayName}</span>
-              </button>
-            ))}
+
+          {/* F4: broadening is allowed, but never silent. */}
+          {broadenedToLibrary && (
+            <p className="flex items-center gap-1.5 text-xs text-amber-500">
+              <TriangleAlert className="h-3 w-3 shrink-0" />
+              Not in your attached files — answered from the library.
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            {Array.from(discovered.values()).map((source) => {
+              const contentType =
+                files.find((file) => file.fileId === source.fileId)
+                  ?.contentType ?? "video/";
+              const Icon = contentType.startsWith("audio/")
+                ? FileAudio
+                : FileVideo;
+              const isAttached = attachedIds.includes(source.fileId);
+
+              return (
+                <div
+                  key={source.fileId}
+                  className="flex w-56 max-w-full flex-col gap-2 rounded-xl border border-border bg-card p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <Icon className="h-4 w-4 shrink-0 text-primary" />
+                    <span
+                      className="min-w-0 flex-1 truncate text-sm font-medium"
+                      title={source.fileDisplayName}
+                    >
+                      {source.fileDisplayName}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onPlay(source)}
+                      className="flex-1"
+                    >
+                      <Play />
+                      Play
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={isAttached ? "secondary" : "outline"}
+                      disabled={isAttached || atLimit}
+                      onClick={() => onAttach(source)}
+                      title={
+                        isAttached
+                          ? "Already attached"
+                          : atLimit
+                          ? `Limit reached: ${MAX_ATTACHMENTS} files`
+                          : "Attach to your next question"
+                      }
+                      className="flex-1"
+                    >
+                      {isAttached ? <Check /> : <Plus />}
+                      {isAttached ? "Attached" : "Attach"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
       {message.status === "error" && (
-        <p
-          className={cn(
-            "flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-500"
-          )}
-        >
+        <p className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-500">
           <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
           {message.error}
         </p>

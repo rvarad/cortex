@@ -27,6 +27,8 @@ public class ChatService {
 
   private final AnswerGenerator answerGenerator;
 
+  private final SourceFormatter sourceFormatter;
+
   private final String PROMPT = "You are Cortex, an assistant that answers questions about a user's media library. Answer the question using ONLY the information in the context below. If the answer is not in the context, say you don't know — do not use outside knowledge. Answer according to the schema provided. Break the answer into coherent segments, put the supporting \"Source no.\" integer/s in each segments \"cites\" (empty if none). Context: %s. Question: %s";
 
   private List<SearchResultDTO> resolveContext(SearchRequestDTO request, String userId) {
@@ -35,23 +37,6 @@ public class ChatService {
         : searchService.search(request, userId);
   }
 
-  private String contextAssembler(List<SearchResultDTO> searchResults) {
-    StringBuilder context = new StringBuilder();
-
-    for (int i = 0; i < searchResults.size(); i++) {
-      SearchResultDTO result = searchResults.get(i);
-
-      context.append("{\n").append("Source no.: ").append(i + 1).append("\n");
-      context.append("fileName: ").append(result.getFileDisplayName()).append("\n");
-      context.append("startTime: ").append(result.getStartTime()).append("\n");
-      context.append("endTime: ").append(result.getEndTime()).append("\n");
-      context.append("transcript: ").append(result.getTranscript()).append("\n");
-      context.append("visualSummary: ").append(result.getVisualSummary()).append("\n");
-      context.append("chunkIndex: ").append(result.getChunkIndex()).append("}\n\n");
-    }
-
-    return context.toString();
-  }
 
   private List<AnswerSegmentDTO> sanitizeCites(List<AnswerSegmentDTO> answer, int sourceCount) {
     return answer.stream()
@@ -109,7 +94,7 @@ public class ChatService {
             .build();
       }
 
-      String context = contextAssembler(searchResults);
+      String context = sourceFormatter.format(searchResults);
 
       String prompt = String.format(
           PROMPT,
@@ -142,7 +127,7 @@ public class ChatService {
         return;
       }
 
-      String context = contextAssembler(searchResults);
+      String context = sourceFormatter.format(searchResults);
 
       String prompt = String.format(
           PROMPT,

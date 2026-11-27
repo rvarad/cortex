@@ -98,7 +98,7 @@ public class TranscriptionService {
 
           return new TranscriptionResult(text, language);
 
-        } catch (Exception e) {
+        } catch (Exception e) { // Retried: the pipeline's only retry, kept until the retry ADR decides.
           log.warn("Transcription attempt {}/{} failed for {}, Error: {}", attempt, maxRetries, objectName,
               e.getMessage());
 
@@ -111,7 +111,11 @@ public class TranscriptionService {
 
       throw new RuntimeException("Transcription retries exhausted for: " + objectName);
 
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("Interrupted while transcribing " + objectName, e);
     } catch (Exception e) {
+      // Wrapped, not logged: this runs inside a Supplier, which can't throw a checked exception.
       throw new RuntimeException("Failed to transcribe file: " + objectName, e);
     }
   }

@@ -43,8 +43,9 @@ class ChatServiceTest {
   private final SearchService searchService = mock(SearchService.class);
   private final AnswerGenerator answerGenerator = mock(AnswerGenerator.class);
 
-  // The real object under test, fed the two fakes via its constructor.
-  private final ChatService chatService = new ChatService(searchService, answerGenerator);
+  // The real object under test. SearchService and AnswerGenerator are fakes; SourceFormatter is
+  // real — it is a pure function we own, and the prompt assertions below depend on its output.
+  private final ChatService chatService = new ChatService(searchService, answerGenerator, new SourceFormatter());
 
   @Test
   void happyPath_assemblesContextAndReturnsGroundedAnswerWithSources() {
