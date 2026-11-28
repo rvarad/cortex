@@ -92,3 +92,17 @@ Without the `fileId`, a finished upload's card shows only once its webhook marks
 **Why not then:** It was there before this work. `npm run lint` reports
 `react-hooks/set-state-in-effect` on the dashboard's effect that calls `fetchFiles`.
 CI does not lint the frontend.
+
+## Move Kafka off Aiven to self-hosted Redpanda on the box
+
+**From:** keeping Kafka up as the Aiven trial lapses.
+**Why not then:** not now, by choice; the Aiven broker is still up. A migration, not a fix.
+**What would bring it back:** The broker is powered off.
+Kafka has no free tier there, and the paid floor is ~$200/mo.
+
+Shape when taken up: Redpanda is Kafka wire-compatible, so it is config, not code — point
+`spring.kafka.bootstrap-servers` at a single-node Redpanda in compose, create the topics,
+done; ADR-0014's boundary handlers are untouched. It is also a net deletion — the internal
+Docker network drops the mTLS keystores (the JKS generation and `changeit` passwords in
+`deploy.sh`). Single node has no replication, which matches the in-flight loss ADR-0014
+already accepts: do not add replication.
